@@ -362,6 +362,20 @@ class ParentRepository(
         onError: (String) -> Unit
     ) {
         val uid = requireUid(onError) ?: return
+        // Ask the device to clear its own meta.ownerUid before we drop our
+        // reference. The command's write rule requires meta.ownerUid to still
+        // equal auth.uid, so it must be pushed BEFORE the removal; the agent
+        // processes it asynchronously (its UnpairAsync nulls ownerUid, deletes
+        // users/{uid}/devices/{id} and rotates the pairing secret). Without
+        // this, a later re-pair is rejected by the pair-request rule, which
+        // requires meta.ownerUid to be absent.
+        sendCommand(
+            deviceId,
+            PolicyConstants.COMMAND_UNPAIR,
+            packageName = null,
+            onSuccess = {},
+            onError = {}
+        )
         database.child(FirebasePaths.userDevice(uid, deviceId)).removeValue()
             .complete(onSuccess, onError, "Remove failed")
     }
