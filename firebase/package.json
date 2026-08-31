@@ -1,0 +1,13 @@
+{
+  "name": "guardpulse-parental-control-rules",
+  "private": true,
+  "scripts": {
+    "test": "jest --runInBand",
+    "test:rules": "npx -y firebase-tools@12 emulators:exec \"npx jest --runInBand database.rules.test.js\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.3",
+    "firebase": "^10.14.1",
+    "jest": "^29.7.0"
+  }
+}

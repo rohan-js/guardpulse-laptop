@@ -1,0 +1,17 @@
+# GuardPulse content blocklist: gambling
+bet365.com
+www.bet365.com
+pokerstars.com
+www.pokerstars.com
+betfair.com
+www.betfair.com
+williamhill.com
+www.williamhill.com
+bwin.com
+www.bwin.com
+888casino.com
+www.888casino.com
+draftkings.com
+www.draftkings.com
+fanfuel.com
+www.fanfuel.com

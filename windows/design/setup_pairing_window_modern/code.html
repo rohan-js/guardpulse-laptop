@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>GuardPulse - Device Pairing</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "inverse-primary": "#adc6ff",
+                "primary-fixed-dim": "#adc6ff",
+                "on-tertiary-container": "#fffbff",
+                "error-container": "#ffdad6",
+                "on-secondary-container": "#00732a",
+                "on-tertiary-fixed": "#410001",
+                "surface-container-highest": "#e4e2e4",
+                "secondary": "#006e28",
+                "on-error-container": "#93000a",
+                "on-secondary-fixed": "#002107",
+                "primary-container": "#0070eb",
+                "outline": "#717786",
+                "surface": "#fcf8fb",
+                "background": "#fcf8fb",
+                "surface-container-high": "#eae7ea",
+                "digital-blue-tint": "#E5F1FF",
+                "surface-container-low": "#f6f3f5",
+                "glass-border": "rgba(255, 255, 255, 0.15)",
+                "surface-background": "#F2F2F7",
+                "on-secondary": "#ffffff",
+                "inverse-surface": "#303032",
+                "inverse-on-surface": "#f3f0f2",
+                "on-primary-container": "#fefcff",
+                "surface-bright": "#fcf8fb",
+                "surface-tint": "#005bc1",
+                "on-primary-fixed": "#001a41",
+                "surface-container": "#f0edef",
+                "on-tertiary-fixed-variant": "#930005",
+                "on-primary": "#ffffff",
+                "on-error": "#ffffff",
+                "outline-variant": "#c1c6d7",
+                "secondary-container": "#6ffb85",
+                "on-primary-fixed-variant": "#004493",
+                "surface-dim": "#dcd9dc",
+                "on-secondary-fixed-variant": "#00531c",
+                "tertiary": "#bc000a",
+                "on-surface-variant": "#414755",
+                "surface-variant": "#e4e2e4",
+                "surface-container-lowest": "#ffffff",
+                "glass-surface": "rgba(255, 255, 255, 0.75)",
+                "primary-fixed": "#d8e2ff",
+                "error": "#ba1a1a",
+                "on-tertiary": "#ffffff",
+                "on-surface": "#1b1b1d",
+                "secondary-fixed": "#72fe88",
+                "on-background": "#1b1b1d",
+                "secondary-fixed-dim": "#53e16f",
+                "primary": "#0058bc",
+                "tertiary-container": "#e2241f",
+                "tertiary-fixed": "#ffdad5",
+                "tertiary-fixed-dim": "#ffb4aa"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "gutter-sm": "16px",
+                "stack-xl": "48px",
+                "stack-md": "20px",
+                "stack-xs": "4px",
+                "stack-sm": "12px",
+                "margin-page": "40px",
+                "stack-lg": "32px",
+                "gutter-lg": "24px",
+                "unit": "4px"
+        },
+        "fontFamily": {
+                "label-md": [
+                        "Hanken Grotesk"
+                ],
+                "body-md": [
+                        "Hanken Grotesk"
+                ],
+                "body-lg": [
+                        "Hanken Grotesk"
+                ],
+                "label-sm": [
+                        "Hanken Grotesk"
+                ],
+                "headline-md": [
+                        "Hanken Grotesk"
+                ],
+                "headline-lg": [
+                        "Hanken Grotesk"
+                ],
+                "headline-lg-mobile": [
+                        "Hanken Grotesk"
+                ],
+                "display-hero": [
+                        "Hanken Grotesk"
+                ]
+        },
+        "fontSize": {
+                "label-md": [
+                        "13px",
+                        {
+                                "lineHeight": "18px",
+                                "letterSpacing": "0.04em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "body-md": [
+                        "15px",
+                        {
+                                "lineHeight": "22px",
+                                "letterSpacing": "0.01em",
+                                "fontWeight": "400"
+                        }
+                ],
+                "body-lg": [
+                        "18px",
+                        {
+                                "lineHeight": "28px",
+                                "letterSpacing": "0em",
+                                "fontWeight": "400"
+                        }
+                ],
+                "label-sm": [
+                        "11px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.06em",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-md": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-lg": [
+                        "32px",
+                        {
+                                "lineHeight": "40px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "28px",
+                        {
+                                "lineHeight": "36px",
+                                "fontWeight": "600"
+                        }
+                ],
+                "display-hero": [
+                        "72px",
+                        {
+                                "lineHeight": "80px",
+                                "letterSpacing": "-0.03em",
+                                "fontWeight": "700"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+<style>
+        /* Custom styles for the spinner and subtle animations */
+        @keyframes subtle-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .animate-subtle-pulse {
+            animation: subtle-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        
+        /* Simulated Desktop Background to frame the window */
+        body {
+            background-color: #F2F2F7;
+            background-image: radial-gradient(circle at 50% 0%, #E5F1FF 0%, transparent 70%);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4 antialiased text-on-surface">
+<!-- Windows 11 Style Setup Window Container -->
+<div class="w-full max-w-[720px] bg-glass-surface backdrop-blur-3xl rounded-xl shadow-[0_24px_48px_-12px_rgba(0,0,0,0.1),0_0_0_1px_rgba(255,255,255,0.8)_inset] border border-glass-border flex flex-col overflow-hidden">
+<!-- Title Bar -->
+<div class="h-10 flex items-center justify-between px-3 select-none">
+<!-- App Identity -->
+<div class="flex items-center gap-2 pl-1">
+<span class="material-symbols-outlined text-[16px] text-primary" style="font-variation-settings: 'FILL' 1;">security</span>
+<span class="font-label-md text-label-md text-on-surface">GuardPulse Laptop</span>
+</div>
+<!-- Window Controls -->
+<div class="flex items-center gap-1">
+<button class="w-8 h-8 rounded hover:bg-surface-variant flex items-center justify-center transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">minimize</span>
+</button>
+<button class="w-8 h-8 rounded hover:bg-surface-variant flex items-center justify-center transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">check_box_outline_blank</span>
+</button>
+<button class="w-8 h-8 rounded hover:bg-error hover:text-on-error flex items-center justify-center transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">close</span>
+</button>
+</div>
+</div>
+<!-- Window Content Canvas -->
+<div class="flex-1 flex flex-col px-10 pt-6 pb-8 gap-stack-lg">
+<!-- Header -->
+<div class="text-center space-y-2 mb-2">
+<h1 class="font-headline-lg text-headline-lg text-on-surface">Pair this laptop with your parent phone</h1>
+<p class="font-body-md text-body-md text-on-surface-variant">Follow the steps below to connect this device to your family account.</p>
+</div>
+<!-- Main Pairing Interaction Area (Bento Layout) -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-gutter-lg items-stretch">
+<!-- Left: Instructions -->
+<div class="bg-surface-container/50 backdrop-blur-sm rounded-xl p-6 border border-white/60 flex flex-col justify-between">
+<div class="space-y-6">
+<!-- Step 1 -->
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-primary text-on-primary flex items-center justify-center shrink-0 shadow-sm">
+<span class="font-label-md text-label-md">1</span>
+</div>
+<div class="pt-1">
+<p class="font-body-md text-body-md text-on-surface font-semibold">Install GuardPulse app</p>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1 font-normal">Download the app on your smartphone from the app store.</p>
+</div>
+</div>
+<!-- Step 2 -->
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-primary text-on-primary flex items-center justify-center shrink-0 shadow-sm">
+<span class="font-label-md text-label-md">2</span>
+</div>
+<div class="pt-1">
+<p class="font-body-md text-body-md text-on-surface font-semibold">Sign in as Parent</p>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1 font-normal">Use your administrator account to access the dashboard.</p>
+</div>
+</div>
+<!-- Step 3 -->
+<div class="flex items-start gap-4">
+<div class="w-8 h-8 rounded-full bg-primary text-on-primary flex items-center justify-center shrink-0 shadow-sm">
+<span class="font-label-md text-label-md">3</span>
+</div>
+<div class="pt-1">
+<p class="font-body-md text-body-md text-on-surface font-semibold">Add Device</p>
+<p class="font-label-md text-label-md text-on-surface-variant mt-1 font-normal">Tap 'Add Device' and use the camera to scan or enter the code.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Right: Pairing Visuals -->
+<div class="flex flex-col gap-4">
+<!-- QR Code Card -->
+<div class="bg-surface-container-lowest rounded-xl p-6 border border-glass-border shadow-sm flex flex-col items-center justify-center flex-1">
+<div class="p-2 rounded-lg mb-4">
+<img alt="Pairing QR Code" class="w-32 h-32 object-contain mix-blend-multiply" data-alt="A highly detailed, perfectly square QR code rendered in stark black and white. It sits isolated on a bright white background. The QR code features distinct position markers in three corners and a dense, complex matrix of digital data squares. The style is strictly utilitarian and technical, representing a secure pairing connection in a modern light-mode software interface." src="https://lh3.googleusercontent.com/aida-public/AB6AXuADdJ1q62EjH92ks07jftjaHKP8CpuSbBWwR6ctflgLz8ehtQfhvKwjAiJge16zzqzRHt5G_SQpdmGG9FAGgtn1lVsegodkudUoubXq0Y66du40rsXdXHJCFiyesKz-ypHBKMkntR3rzlJugTbhorp1Hjz5r1ps2luxA-5rwJwqQYltpn6xhn3ko-TlkxTXMGtVXe8vx9MMwyBch68gIvBF9sGJ6G8FbaYuNQCeQWOkTshrGCGpZl8-"/>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-widest">Scan with phone</span>
+</div>
+<!-- Manual Code Card -->
+<div class="bg-digital-blue-tint/50 rounded-xl p-4 border border-primary/10 shadow-sm text-center">
+<span class="font-label-sm text-label-sm text-primary uppercase tracking-widest block mb-1">Pairing code</span>
+<div class="font-headline-lg text-headline-lg text-primary tracking-[0.2em]">
+                            123-456
+                        </div>
+</div>
+</div>
+</div>
+<!-- Footer Status & Metadata -->
+<div class="mt-4 pt-6 border-t border-glass-border flex flex-col sm:flex-row items-center justify-between gap-4">
+<!-- Active Status -->
+<div class="flex items-center gap-3 bg-surface-container/50 px-4 py-2 rounded-full border border-white/60">
+<svg class="animate-spin h-5 w-5 text-primary" fill="none" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+<path class="opacity-75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill="currentColor"></path>
+</svg>
+<span class="font-body-md text-body-md text-on-surface animate-subtle-pulse">Waiting for pairing...</span>
+</div>
+<!-- Device Info -->
+<div class="flex items-center gap-2 text-on-surface-variant opacity-70">
+<span class="material-symbols-outlined text-[16px]">laptop_mac</span>
+<span class="font-label-md text-label-md">Laptop-DESKTOP-4289</span>
+</div>
+</div>
+</div>
+</div>
+</body></html>

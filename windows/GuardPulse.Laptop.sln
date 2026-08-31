@@ -1,0 +1,64 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F688B21B-0B5E-4D5D-A6E1-3E5FBDA5E239}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Protocol", "src\GuardPulse.Protocol\GuardPulse.Protocol.csproj", "{698E1135-9936-4138-BC56-88ADB64A850F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Agent.Core", "src\GuardPulse.Agent.Core\GuardPulse.Agent.Core.csproj", "{2782C8FA-CCA6-44E2-9039-76CAF4C61D01}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Agent.Service", "src\GuardPulse.Agent.Service\GuardPulse.Agent.Service.csproj", "{A3CE85EA-54A3-47A9-A672-CF77C059B37D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Agent.Session", "src\GuardPulse.Agent.Session\GuardPulse.Agent.Session.csproj", "{1D3320A0-F2C7-44B4-953E-52D06614C032}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{25B1F375-180E-4991-ABBC-34C7CC5BB0C3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Protocol.Tests", "tests\GuardPulse.Protocol.Tests\GuardPulse.Protocol.Tests.csproj", "{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GuardPulse.Agent.Core.Tests", "tests\GuardPulse.Agent.Core.Tests\GuardPulse.Agent.Core.Tests.csproj", "{6D91BB0C-D1DC-46F6-8A1C-783499D88306}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{698E1135-9936-4138-BC56-88ADB64A850F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{698E1135-9936-4138-BC56-88ADB64A850F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{698E1135-9936-4138-BC56-88ADB64A850F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{698E1135-9936-4138-BC56-88ADB64A850F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2782C8FA-CCA6-44E2-9039-76CAF4C61D01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2782C8FA-CCA6-44E2-9039-76CAF4C61D01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2782C8FA-CCA6-44E2-9039-76CAF4C61D01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2782C8FA-CCA6-44E2-9039-76CAF4C61D01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3CE85EA-54A3-47A9-A672-CF77C059B37D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3CE85EA-54A3-47A9-A672-CF77C059B37D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3CE85EA-54A3-47A9-A672-CF77C059B37D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3CE85EA-54A3-47A9-A672-CF77C059B37D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1D3320A0-F2C7-44B4-953E-52D06614C032}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1D3320A0-F2C7-44B4-953E-52D06614C032}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1D3320A0-F2C7-44B4-953E-52D06614C032}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1D3320A0-F2C7-44B4-953E-52D06614C032}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6D91BB0C-D1DC-46F6-8A1C-783499D88306}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D91BB0C-D1DC-46F6-8A1C-783499D88306}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D91BB0C-D1DC-46F6-8A1C-783499D88306}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D91BB0C-D1DC-46F6-8A1C-783499D88306}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{698E1135-9936-4138-BC56-88ADB64A850F} = {F688B21B-0B5E-4D5D-A6E1-3E5FBDA5E239}
+		{2782C8FA-CCA6-44E2-9039-76CAF4C61D01} = {F688B21B-0B5E-4D5D-A6E1-3E5FBDA5E239}
+		{A3CE85EA-54A3-47A9-A672-CF77C059B37D} = {F688B21B-0B5E-4D5D-A6E1-3E5FBDA5E239}
+		{1D3320A0-F2C7-44B4-953E-52D06614C032} = {F688B21B-0B5E-4D5D-A6E1-3E5FBDA5E239}
+		{8FE4BE57-850F-4548-B2B8-D9FCFEC3B627} = {25B1F375-180E-4991-ABBC-34C7CC5BB0C3}
+		{6D91BB0C-D1DC-46F6-8A1C-783499D88306} = {25B1F375-180E-4991-ABBC-34C7CC5BB0C3}
+	EndGlobalSection
+EndGlobal

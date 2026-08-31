@@ -1,0 +1,559 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        "devices": {
+          "$deviceId": {
+            ".write": "auth != null && (auth.uid == $uid || (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == $uid))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['deviceId']) && newData.child('deviceId').val() == $deviceId && (!newData.child('label').exists() || newData.child('label').isString()) && (!newData.child('pairedAt').exists() || newData.child('pairedAt').isNumber()) && (!newData.child('lastSeen').exists() || newData.child('lastSeen').isNumber()) && (!newData.child('online').exists() || newData.child('online').isBoolean()) && (!newData.child('enforcementMode').exists() || newData.child('enforcementMode').isString()) && (!newData.child('protectionHealthy').exists() || newData.child('protectionHealthy').isBoolean()))",
+            "deviceId": {},
+            "label": {},
+            "pairedAt": {},
+            "lastSeen": {},
+            "online": {},
+            "enforcementMode": {},
+            "protectionHealthy": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        ".read": "auth != null && (data.child('meta').child('ownerUid').val() == auth.uid || data.child('meta').child('tvUid').val() == auth.uid)",
+        "meta": {
+          ".write": "auth != null && ((!data.exists() && newData.child('tvUid').val() == auth.uid) || (data.child('tvUid').val() == auth.uid && (newData.child('ownerUid').val() == data.child('ownerUid').val() || (!data.child('ownerUid').exists() && newData.child('ownerUid').isString()) || (data.child('ownerUid').exists() && !newData.child('ownerUid').exists()))))",
+          ".validate": "newData.hasChildren(['deviceId', 'tvUid']) && newData.child('deviceId').val() == $deviceId && newData.child('tvUid').isString() && (!newData.child('ownerUid').exists() || newData.child('ownerUid').isString()) && (!newData.child('platform').exists() || (newData.child('platform').isString() && newData.child('platform').val().length <= 32)) && (!newData.child('label').exists() || newData.child('label').isString()) && (!newData.child('manufacturer').exists() || newData.child('manufacturer').isString()) && (!newData.child('model').exists() || newData.child('model').isString()) && (!newData.child('androidSdk').exists() || newData.child('androidSdk').isNumber()) && (!newData.child('appVersion').exists() || newData.child('appVersion').isString()) && (!newData.child('lastRegisteredAt').exists() || newData.child('lastRegisteredAt').isNumber()) && (!newData.child('pairedAt').exists() || newData.child('pairedAt').isNumber())",
+          "deviceId": {},
+          "tvUid": {},
+          "ownerUid": {},
+          "platform": {},
+          "label": {},
+          "manufacturer": {},
+          "model": {},
+          "androidSdk": {},
+          "appVersion": {},
+          "lastRegisteredAt": {},
+          "pairedAt": {},
+          "$other": {
+            ".validate": false
+          }
+        },
+        "apps": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+          "$packageKey": {
+            ".validate": "newData.hasChildren(['packageName', 'label', 'blockable']) && newData.child('packageName').isString() && newData.child('label').isString() && newData.child('blockable').isBoolean() && (!newData.child('versionName').exists() || newData.child('versionName').isString()) && (!newData.child('versionCode').exists() || newData.child('versionCode').isNumber()) && (!newData.child('systemApp').exists() || newData.child('systemApp').isBoolean()) && (!newData.child('protectedReason').exists() || newData.child('protectedReason').isString())",
+            "packageName": {},
+            "label": {},
+            "blockable": {},
+            "versionName": {},
+            "versionCode": {},
+            "systemApp": {},
+            "protectedReason": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "state": {
+          "apps": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            "$packageKey": {
+              ".validate": "newData.hasChildren(['packageName', 'requestedSuspended', 'enforcementMode', 'fallbackLocked', 'usageMinutesToday']) && newData.child('packageName').isString() && newData.child('requestedSuspended').isBoolean() && (!newData.child('suspended').exists() || newData.child('suspended').isBoolean()) && newData.child('enforcementMode').isString() && newData.child('fallbackLocked').isBoolean() && newData.child('usageMinutesToday').isNumber() && (!newData.child('usageMsToday').exists() || (newData.child('usageMsToday').isNumber() && newData.child('usageMsToday').val() >= 0)) && (!newData.child('rawUsageMinutesToday').exists() || (newData.child('rawUsageMinutesToday').isNumber() && newData.child('rawUsageMinutesToday').val() >= 0)) && (!newData.child('rawUsageMsToday').exists() || (newData.child('rawUsageMsToday').isNumber() && newData.child('rawUsageMsToday').val() >= 0)) && (!newData.child('usageCapturedAt').exists() || newData.child('usageCapturedAt').isNumber()) && (!newData.child('foregroundActive').exists() || newData.child('foregroundActive').isBoolean()) && (!newData.child('foregroundStartedAt').exists() || newData.child('foregroundStartedAt').isNumber()) && (!newData.child('controlRevisionId').exists() || newData.child('controlRevisionId').isString()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('manualBlocked').exists() || newData.child('manualBlocked').isBoolean()) && (!newData.child('dailyLimitBlocked').exists() || newData.child('dailyLimitBlocked').isBoolean()) && (!newData.child('networkBlocked').exists() || newData.child('networkBlocked').isBoolean()) && (!newData.child('vpnApplied').exists() || newData.child('vpnApplied').isBoolean()) && (!newData.child('vpnActive').exists() || newData.child('vpnActive').isBoolean()) && (!newData.child('lockBlocked').exists() || newData.child('lockBlocked').isBoolean()) && (!newData.child('lockReason').exists() || newData.child('lockReason').isString()) && (!newData.child('vpnLastError').exists() || newData.child('vpnLastError').isString()) && (!newData.child('blockReason').exists() || newData.child('blockReason').isString()) && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('blockable').exists() || newData.child('blockable').isBoolean()) && (!newData.child('lastError').exists() || newData.child('lastError').isString())",
+              "packageName": {},
+              "suspended": {},
+              "requestedSuspended": {},
+              "manualBlocked": {},
+              "dailyLimitBlocked": {},
+              "networkBlocked": {},
+              "vpnApplied": {},
+              "vpnActive": {},
+              "lockBlocked": {},
+              "lockReason": {},
+              "vpnLastError": {},
+              "blockReason": {},
+              "enforcementMode": {},
+              "fallbackLocked": {},
+              "usageMinutesToday": {},
+              "usageMsToday": {},
+              "rawUsageMinutesToday": {},
+              "rawUsageMsToday": {},
+              "usageCapturedAt": {},
+              "foregroundActive": {},
+              "foregroundStartedAt": {},
+              "controlRevisionId": {},
+              "dailyLimitMinutes": {},
+              "blockable": {},
+              "lastError": {},
+              "updatedAt": {},
+              "$other": {
+                ".validate": false
+              }
+            }
+          },
+          "browser": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['browser', 'tabCount', 'updatedAt']) && newData.child('browser').isString() && newData.child('browser').val().length >= 1 && newData.child('browser').val().length <= 512 && (!newData.child('label').exists() || (newData.child('label').isString() && newData.child('label').val().length <= 100)) && (!newData.child('activeTab').exists() || (newData.child('activeTab').isString() && newData.child('activeTab').val().length <= 300)) && (!newData.child('activeUrl').exists() || (newData.child('activeUrl').isString() && newData.child('activeUrl').val().length <= 2048)) && newData.child('tabCount').isNumber() && newData.child('tabCount').val() >= 0 && newData.child('tabCount').val() <= 1000 && newData.child('updatedAt').isNumber()",
+            "browser": {},
+            "label": {},
+            "activeTab": {},
+            "activeUrl": {},
+            "tabCount": {},
+            "tabs": {
+              "$entryId": {
+                ".validate": "newData.hasChildren(['title']) && newData.child('title').isString() && newData.child('title').val().length <= 300 && (!newData.child('url').exists() || (newData.child('url').isString() && newData.child('url').val().length <= 2048))",
+                "title": {},
+                "url": {},
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "domainsToday": {
+              "$domain": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 86400000"
+              }
+            },
+            "updatedAt": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "heartbeat": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+          ".validate": "newData.hasChildren(['online', 'lastSeen']) && newData.child('online').isBoolean() && newData.child('lastSeen').isNumber() && (!newData.child('usageAccess').exists() || newData.child('usageAccess').isBoolean()) && (!newData.child('vpnActive').exists() || newData.child('vpnActive').isBoolean()) && (!newData.child('vpnBlockedCount').exists() || (newData.child('vpnBlockedCount').isNumber() && newData.child('vpnBlockedCount').val() >= 0)) && (!newData.child('backgroundUnrestricted').exists() || newData.child('backgroundUnrestricted').isBoolean()) && (!newData.child('deviceOwner').exists() || newData.child('deviceOwner').isBoolean()) && (!newData.child('enforcementMode').exists() || newData.child('enforcementMode').isString()) && (!newData.child('protectionHealthy').exists() || newData.child('protectionHealthy').isBoolean()) && (!newData.child('safeModeActive').exists() || newData.child('safeModeActive').isBoolean()) && (!newData.child('activeModeId').exists() || newData.child('activeModeId').isString()) && (!newData.child('activeModeName').exists() || newData.child('activeModeName').isString()) && (!newData.child('scheduleActive').exists() || newData.child('scheduleActive').isBoolean()) && (!newData.child('budgetMinutesToday').exists() || (newData.child('budgetMinutesToday').isNumber() && newData.child('budgetMinutesToday').val() >= 0)) && (!newData.child('contentFilterActive').exists() || newData.child('contentFilterActive').isBoolean()) && (!newData.child('allowlistActive').exists() || newData.child('allowlistActive').isBoolean())",
+          "online": {},
+          "lastSeen": {},
+          "usageAccess": {},
+          "vpnActive": {},
+          "vpnBlockedCount": {},
+          "backgroundUnrestricted": {},
+          "deviceOwner": {},
+          "enforcementMode": {},
+          "protectionHealthy": {},
+          "safeModeActive": {},
+          "activeModeId": {},
+          "activeModeName": {},
+          "scheduleActive": {},
+          "budgetMinutesToday": {},
+          "contentFilterActive": {},
+          "allowlistActive": {},
+          "$other": {
+            ".validate": false
+          }
+        },
+        "activity": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+          "current": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['runtimeApp', 'appKey', 'appLabel', 'appStartedAt', 'overlayState', 'mediaAvailable', 'playbackState', 'playbackSpeed', 'captureSource', 'updatedAt']) && newData.child('runtimeApp').isString() && newData.child('runtimeApp').val().length <= 300 && newData.child('appKey').isString() && newData.child('appKey').val().length <= 300 && newData.child('appLabel').isString() && newData.child('appLabel').val().length <= 160 && newData.child('appStartedAt').isNumber() && newData.child('appStartedAt').val() >= 0 && (newData.child('overlayState').val() == 'none' || newData.child('overlayState').val() == 'locked') && newData.child('mediaAvailable').isBoolean() && (!newData.child('mediaTitle').exists() || (newData.child('mediaTitle').isString() && newData.child('mediaTitle').val().length <= 160)) && (!newData.child('mediaSubtitle').exists() || (newData.child('mediaSubtitle').isString() && newData.child('mediaSubtitle').val().length <= 160)) && (newData.child('playbackState').val() == 'playing' || newData.child('playbackState').val() == 'paused' || newData.child('playbackState').val() == 'buffering' || newData.child('playbackState').val() == 'stopped' || newData.child('playbackState').val() == 'unknown') && (!newData.child('positionMs').exists() || (newData.child('positionMs').isNumber() && newData.child('positionMs').val() >= 0)) && (!newData.child('durationMs').exists() || (newData.child('durationMs').isNumber() && newData.child('durationMs').val() >= 0)) && (!newData.child('positionCapturedAt').exists() || (newData.child('positionCapturedAt').isNumber() && newData.child('positionCapturedAt').val() >= 0)) && newData.child('playbackSpeed').isNumber() && newData.child('playbackSpeed').val() >= 0 && (!newData.child('mediaStartedAt').exists() || (newData.child('mediaStartedAt').isNumber() && newData.child('mediaStartedAt').val() >= 0)) && (!newData.child('mediaConfidence').exists() || newData.child('mediaConfidence').val() == 'low' || newData.child('mediaConfidence').val() == 'medium' || newData.child('mediaConfidence').val() == 'high') && (newData.child('captureSource').val() == 'agent' || newData.child('captureSource').val() == 'accessibility' || newData.child('captureSource').val() == 'audio' || newData.child('captureSource').val() == 'mediaBrowser' || newData.child('captureSource').val() == 'combined') && newData.child('updatedAt').isNumber() && newData.child('updatedAt').val() >= 0)",
+            "runtimeApp": {},
+            "appKey": {},
+            "appLabel": {},
+            "appStartedAt": {},
+            "overlayState": {},
+            "mediaAvailable": {},
+            "mediaTitle": {},
+            "mediaSubtitle": {},
+            "playbackState": {},
+            "positionMs": {},
+            "durationMs": {},
+            "positionCapturedAt": {},
+            "playbackSpeed": {},
+            "mediaStartedAt": {},
+            "mediaConfidence": {},
+            "captureSource": {},
+            "updatedAt": {},
+            "$other": {
+              ".validate": false
+            }
+          },
+          "history": {
+            ".indexOn": [
+              "startedAt"
+            ],
+            "$sessionId": {
+              ".validate": "!newData.exists() || (newData.hasChildren(['id', 'type', 'appKey', 'appLabel', 'startedAt', 'endedAt', 'captureSource', 'updatedAt']) && newData.child('id').val() == $sessionId && (newData.child('type').val() == 'app' || newData.child('type').val() == 'media' || newData.child('type').val() == 'tab') && newData.child('appKey').isString() && newData.child('appKey').val().length <= 300 && newData.child('appLabel').isString() && newData.child('appLabel').val().length <= 160 && (!newData.child('title').exists() || (newData.child('title').isString() && newData.child('title').val().length <= 160)) && (!newData.child('subtitle').exists() || (newData.child('subtitle').isString() && newData.child('subtitle').val().length <= 160)) && (!newData.child('url').exists() || (newData.child('url').isString() && newData.child('url').val().length <= 2048)) && newData.child('startedAt').isNumber() && newData.child('startedAt').val() >= 0 && newData.child('endedAt').isNumber() && newData.child('endedAt').val() >= newData.child('startedAt').val() && (!newData.child('lastPositionMs').exists() || (newData.child('lastPositionMs').isNumber() && newData.child('lastPositionMs').val() >= 0)) && (!newData.child('durationMs').exists() || (newData.child('durationMs').isNumber() && newData.child('durationMs').val() >= 0)) && (!newData.child('playbackState').exists() || newData.child('playbackState').val() == 'playing' || newData.child('playbackState').val() == 'paused' || newData.child('playbackState').val() == 'buffering' || newData.child('playbackState').val() == 'stopped' || newData.child('playbackState').val() == 'unknown') && (!newData.child('confidence').exists() || newData.child('confidence').val() == 'medium' || newData.child('confidence').val() == 'high') && (newData.child('captureSource').val() == 'agent' || newData.child('captureSource').val() == 'accessibility' || newData.child('captureSource').val() == 'audio' || newData.child('captureSource').val() == 'mediaBrowser' || newData.child('captureSource').val() == 'combined') && newData.child('updatedAt').isNumber() && newData.child('updatedAt').val() >= 0)",
+              "id": {},
+              "type": {},
+              "appKey": {},
+              "appLabel": {},
+              "title": {},
+              "subtitle": {},
+              "url": {},
+              "startedAt": {},
+              "endedAt": {},
+              "lastPositionMs": {},
+              "durationMs": {},
+              "playbackState": {},
+              "confidence": {},
+              "captureSource": {},
+              "updatedAt": {},
+              "$other": {
+                ".validate": false
+              }
+            }
+          }
+        },
+        "security": {
+          ".read": "auth != null && (root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid)",
+          "pin": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['salt', 'hash']) && newData.child('salt').isString() && newData.child('hash').isString() && newData.child('salt').val().matches(/^[-_A-Za-z0-9]{22}$/) && newData.child('hash').val().matches(/^[-_A-Za-z0-9]{43}$/) && (!newData.child('version').exists() || newData.child('version').val() == 1 || newData.child('version').val() == 2) && (!newData.child('version').exists() || newData.child('version').val() != 2 || (newData.child('algorithm').val() == 'PBKDF2WithHmacSHA256' && newData.child('iterations').isNumber() && newData.child('iterations').val() >= 210000 && newData.child('iterations').val() <= 1000000)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid)",
+            "salt": {},
+            "hash": {},
+            "version": {},
+            "algorithm": {},
+            "iterations": {},
+            "updatedAt": {},
+            "updatedBy": {},
+            "$other": {
+              ".validate": false
+            }
+          },
+          "runtime": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "(!newData.child('platform').exists() || (newData.child('platform').isString() && newData.child('platform').val().length <= 32)) && (!newData.child('enforcementMode').exists() || newData.child('enforcementMode').isString()) && (!newData.child('deviceOwner').exists() || newData.child('deviceOwner').isBoolean()) && (!newData.child('deviceAdmin').exists() || newData.child('deviceAdmin').isBoolean()) && (!newData.child('deviceAdminSetupAvailable').exists() || newData.child('deviceAdminSetupAvailable').isBoolean()) && (!newData.child('accessibility').exists() || newData.child('accessibility').isBoolean()) && (!newData.child('usageAccess').exists() || newData.child('usageAccess').isBoolean()) && (!newData.child('vpnPrepared').exists() || newData.child('vpnPrepared').isBoolean()) && (!newData.child('vpnActive').exists() || newData.child('vpnActive').isBoolean()) && (!newData.child('vpnBlockedCount').exists() || (newData.child('vpnBlockedCount').isNumber() && newData.child('vpnBlockedCount').val() >= 0)) && (!newData.child('vpnLastError').exists() || newData.child('vpnLastError').isString()) && (!newData.child('backgroundUnrestricted').exists() || newData.child('backgroundUnrestricted').isBoolean()) && (!newData.child('pinConfigured').exists() || newData.child('pinConfigured').isBoolean()) && (!newData.child('pinHashVersion').exists() || newData.child('pinHashVersion').val() == 0 || newData.child('pinHashVersion').val() == 1 || newData.child('pinHashVersion').val() == 2) && (!newData.child('protectionHealthy').exists() || newData.child('protectionHealthy').isBoolean()) && (!newData.child('lastForegroundPackage').exists() || newData.child('lastForegroundPackage').isString()) && (!newData.child('safeModeActive').exists() || newData.child('safeModeActive').isBoolean()) && (!newData.child('safeModeUntil').exists() || newData.child('safeModeUntil').isNumber()) && (!newData.child('activeModeId').exists() || newData.child('activeModeId').isString()) && (!newData.child('activeModeName').exists() || newData.child('activeModeName').isString()) && (!newData.child('scheduleActive').exists() || newData.child('scheduleActive').isBoolean()) && (!newData.child('budgetMinutesToday').exists() || (newData.child('budgetMinutesToday').isNumber() && newData.child('budgetMinutesToday').val() >= 0)) && (!newData.child('contentFilterActive').exists() || newData.child('contentFilterActive').isBoolean()) && (!newData.child('allowlistActive').exists() || newData.child('allowlistActive').isBoolean()) && (!newData.child('customBlockedDomainsActive').exists() || newData.child('customBlockedDomainsActive').isBoolean()) && (!newData.child('lastSyncError').exists() || newData.child('lastSyncError').isString()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())",
+            "enforcementMode": {},
+            "deviceOwner": {},
+            "deviceAdmin": {},
+            "deviceAdminSetupAvailable": {},
+            "accessibility": {},
+            "usageAccess": {},
+            "vpnPrepared": {},
+            "vpnActive": {},
+            "vpnBlockedCount": {},
+            "vpnLastError": {},
+            "backgroundUnrestricted": {},
+            "pinConfigured": {},
+            "pinHashVersion": {},
+            "protectionHealthy": {},
+            "lastForegroundPackage": {},
+            "safeModeActive": {},
+            "safeModeUntil": {},
+            "activeModeId": {},
+            "activeModeName": {},
+            "scheduleActive": {},
+            "budgetMinutesToday": {},
+            "contentFilterActive": {},
+            "allowlistActive": {},
+            "lastSyncError": {},
+            "updatedAt": {},
+            "platform": {},
+            "$other": {
+              ".validate": false
+            }
+          },
+          "safeMode": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['enabled', 'until']) && newData.child('enabled').isBoolean() && newData.child('until').isNumber() && ((newData.child('enabled').val() == false && newData.child('until').val() == 0) || (newData.child('enabled').val() == true && newData.child('startedAt').isNumber() && newData.child('until').val() > newData.child('startedAt').val() && newData.child('until').val() - newData.child('startedAt').val() <= 86400000)) && (!newData.child('startedAt').exists() || newData.child('startedAt').isNumber()) && (!newData.child('startedBy').exists() || newData.child('startedBy').val() == auth.uid) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid)",
+            "enabled": {},
+            "until": {},
+            "startedAt": {},
+            "startedBy": {},
+            "updatedAt": {},
+            "updatedBy": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "policy": {
+          "apps": {
+            "$packageKey": {
+              ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+              ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+            }
+          },
+          "modes": {
+            "$modeId": {
+              ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+              ".validate": "!newData.exists() || (newData.hasChildren(['modeId', 'name']) && newData.child('modeId').val() == $modeId && newData.child('name').isString() && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))",
+              "apps": {
+                "$packageKey": {
+                  ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+                }
+              }
+            }
+          },
+          "activeMode": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+            ".validate": "!newData.exists() || (newData.hasChildren(['modeId']) && newData.child('modeId').isString() && (!newData.child('modeName').exists() || newData.child('modeName').isString()) && (!newData.child('activatedAt').exists() || newData.child('activatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))"
+          }
+        },
+        "control": {
+          "v2": {
+            ".write": "auth != null && (root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid)",
+            ".validate": "newData.hasChildren(['schemaVersion', 'revisionId', 'safeMode']) && newData.child('schemaVersion').val() == 2 && newData.child('revisionId').isString() && newData.child('revisionId').val().length > 0 && (!data.exists() || newData.child('revisionId').val() != data.child('revisionId').val()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid) && newData.child('safeMode').hasChildren(['enabled', 'until']) && newData.child('safeMode').child('enabled').isBoolean() && newData.child('safeMode').child('until').isNumber() && ((newData.child('safeMode').child('enabled').val() == false && newData.child('safeMode').child('until').val() == 0) || (newData.child('safeMode').child('enabled').val() == true && newData.child('safeMode').child('startedAt').isNumber() && newData.child('safeMode').child('until').val() > newData.child('safeMode').child('startedAt').val() && newData.child('safeMode').child('until').val() - newData.child('safeMode').child('startedAt').val() <= 86400000)) && (!newData.child('activeMode').exists() || (newData.child('activeMode').child('modeId').isString() && newData.child('modes').child(newData.child('activeMode').child('modeId').val()).exists())) && (!newData.child('pin').exists() || (newData.child('pin').hasChildren(['salt', 'hash']) && newData.child('pin').child('salt').val().matches(/^[-_A-Za-z0-9]{22}$/) && newData.child('pin').child('hash').val().matches(/^[-_A-Za-z0-9]{43}$/) && (!newData.child('pin').child('version').exists() || newData.child('pin').child('version').val() == 1 || newData.child('pin').child('version').val() == 2) && (!newData.child('pin').child('version').exists() || newData.child('pin').child('version').val() != 2 || (newData.child('pin').child('algorithm').val() == 'PBKDF2WithHmacSHA256' && newData.child('pin').child('iterations').val() >= 210000 && newData.child('pin').child('iterations').val() <= 1000000))))",
+            "schemaVersion": {},
+            "revisionId": {},
+            "updatedAt": {},
+            "updatedBy": {},
+            "apps": {
+              "$packageKey": {
+                ".validate": "newData.hasChildren(['packageKey', 'packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && newData.child('packageKey').val() == $packageKey && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())",
+                "packageKey": {},
+                "packageName": {},
+                "manualBlocked": {},
+                "dailyLimitMinutes": {},
+                "updatedAt": {},
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "modes": {
+              "$modeId": {
+                ".validate": "!newData.exists() || (newData.hasChildren(['modeId', 'name']) && newData.child('modeId').val() == $modeId && newData.child('name').isString() && newData.child('name').val().length > 0 && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))",
+                "modeId": {},
+                "name": {},
+                "createdAt": {},
+                "updatedAt": {},
+                "updatedBy": {},
+                "apps": {
+                  "$packageKey": {
+                    ".validate": "newData.hasChildren(['packageKey', 'packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && newData.child('packageKey').val() == $packageKey && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())",
+                    "packageKey": {},
+                    "packageName": {},
+                    "manualBlocked": {},
+                    "dailyLimitMinutes": {},
+                    "updatedAt": {},
+                    "$other": {
+                      ".validate": false
+                    }
+                  }
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "activeMode": {
+              "modeId": {},
+              "modeName": {},
+              "activatedAt": {},
+              "updatedBy": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "safeMode": {
+              "enabled": {},
+              "until": {},
+              "startedAt": {},
+              "startedBy": {},
+              "updatedAt": {},
+              "updatedBy": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "pin": {
+              "salt": {},
+              "hash": {},
+              "version": {},
+              "algorithm": {},
+              "iterations": {},
+              "updatedAt": {},
+              "updatedBy": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "schedule": {
+              ".validate": "!newData.exists() || (newData.hasChildren(['enabled', 'startMinute', 'endMinute']) && newData.child('enabled').isBoolean() && newData.child('startMinute').isNumber() && newData.child('startMinute').val() >= 0 && newData.child('startMinute').val() <= 1439 && newData.child('endMinute').isNumber() && newData.child('endMinute').val() >= 0 && newData.child('endMinute').val() <= 1439)",
+              "enabled": {},
+              "startMinute": {},
+              "endMinute": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "budget": {
+              ".validate": "!newData.exists() || (newData.hasChildren(['dailyLimitMinutes']) && newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() >= 1 && newData.child('dailyLimitMinutes').val() <= 1440)",
+              "dailyLimitMinutes": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "contentFilter": {
+              ".validate": "!newData.exists() || ((!newData.child('social').exists() || newData.child('social').isBoolean()) && (!newData.child('gambling').exists() || newData.child('gambling').isBoolean()) && (!newData.child('adult').exists() || newData.child('adult').isBoolean()) && (!newData.child('gaming').exists() || newData.child('gaming').isBoolean()))",
+              "social": {},
+              "gambling": {},
+              "adult": {},
+              "gaming": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "allowlist": {
+              ".validate": "!newData.exists() || (newData.hasChildren(['enabled']) && newData.child('enabled').isBoolean())",
+              "enabled": {},
+              "$other": {
+                ".validate": false
+              }
+            },
+            "customBlockedDomains": {
+              ".validate": "!newData.exists() || newData.hasChildren()",
+              "$idx": {
+                ".validate": "newData.isString() && newData.val().matches(/^([A-Za-z0-9]([A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,}(\\/[A-Za-z0-9\\-_\\.\\?\\=\\&\\/\\%]*)?$/) && newData.val().length <= 253"
+              }
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "sync": {
+          "desired": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['revisionId', 'kind', 'requestedAt', 'requestedBy']) && newData.child('revisionId').isString() && newData.child('revisionId').val().length > 0 && (newData.child('kind').val() == 'appPolicy' || newData.child('kind').val() == 'modeCreate' || newData.child('kind').val() == 'modeUpdate' || newData.child('kind').val() == 'modeDelete' || newData.child('kind').val() == 'modePolicy' || newData.child('kind').val() == 'activeMode' || newData.child('kind').val() == 'safeMode' || newData.child('kind').val() == 'pin' || newData.child('kind').val() == 'migration' || newData.child('kind').val() == 'schedule' || newData.child('kind').val() == 'budget' || newData.child('kind').val() == 'contentFilter' || newData.child('kind').val() == 'allowlist' || newData.child('kind').val() == 'customBlockedDomains') && newData.child('requestedAt').isNumber() && newData.child('requestedBy').val() == auth.uid && (!newData.child('target').exists() || newData.child('target').isString())",
+            "revisionId": {},
+            "kind": {},
+            "target": {},
+            "requestedAt": {},
+            "requestedBy": {},
+            "$other": {
+              ".validate": false
+            }
+          },
+          "applied": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['revisionId', 'status', 'appliedAt', 'sessionId']) && newData.child('revisionId').val() == root.child('devices').child($deviceId).child('sync').child('desired').child('revisionId').val() && newData.child('revisionId').val() == root.child('devices').child($deviceId).child('control').child('v2').child('revisionId').val() && (newData.child('status').val() == 'applied' || newData.child('status').val() == 'failed') && newData.child('appliedAt').isNumber() && newData.child('sessionId').isString() && newData.child('sessionId').val() == root.child('devices').child($deviceId).child('sync').child('runtime').child('sessionId').val() && (!newData.child('error').exists() || newData.child('error').isString())",
+            "revisionId": {},
+            "status": {},
+            "appliedAt": {},
+            "sessionId": {},
+            "error": {},
+            "$other": {
+              ".validate": false
+            }
+          },
+          "runtime": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "(!newData.child('connected').exists() || newData.child('connected').isBoolean()) && (!newData.child('sessionId').exists() || newData.child('sessionId').isString()) && (!newData.child('protocolVersion').exists() || newData.child('protocolVersion').val() == 2) && (!newData.child('connectedAt').exists() || newData.child('connectedAt').isNumber()) && (!newData.child('disconnectedAt').exists() || newData.child('disconnectedAt').isNumber()) && (!newData.child('lastPolicyReceivedAt').exists() || newData.child('lastPolicyReceivedAt').isNumber()) && (!newData.child('lastPolicyAppliedAt').exists() || newData.child('lastPolicyAppliedAt').isNumber()) && (!newData.child('lastStateWriteAt').exists() || newData.child('lastStateWriteAt').isNumber()) && (!newData.child('lastUsageWriteAt').exists() || newData.child('lastUsageWriteAt').isNumber()) && (!newData.child('lastBrowserWriteAt').exists() || newData.child('lastBrowserWriteAt').isNumber()) && (!newData.child('lastHeartbeatWriteAt').exists() || newData.child('lastHeartbeatWriteAt').isNumber()) && (!newData.child('lastInventoryWriteAt').exists() || newData.child('lastInventoryWriteAt').isNumber()) && (!newData.child('lastHealthWriteAt').exists() || newData.child('lastHealthWriteAt').isNumber()) && (!newData.child('lastCommandWriteAt').exists() || newData.child('lastCommandWriteAt').isNumber()) && (!newData.child('lastUnlockWriteAt').exists() || newData.child('lastUnlockWriteAt').isNumber()) && (!newData.child('lastTamperWriteAt').exists() || newData.child('lastTamperWriteAt').isNumber()) && (!newData.child('lastSuccessAt').exists() || newData.child('lastSuccessAt').isNumber()) && (!newData.child('lastFailedChannel').exists() || newData.child('lastFailedChannel').isString()) && (!newData.child('lastError').exists() || newData.child('lastError').isString()) && (!newData.child('lastErrorAt').exists() || newData.child('lastErrorAt').isNumber()) && (!newData.child('inventoryRevision').exists() || newData.child('inventoryRevision').isString())",
+            "connected": {},
+            "sessionId": {},
+            "protocolVersion": {},
+            "connectedAt": {},
+            "disconnectedAt": {},
+            "lastPolicyReceivedAt": {},
+            "lastPolicyAppliedAt": {},
+            "lastStateWriteAt": {},
+            "lastUsageWriteAt": {},
+            "lastBrowserWriteAt": {},
+            "lastHeartbeatWriteAt": {},
+            "lastInventoryWriteAt": {},
+            "lastHealthWriteAt": {},
+            "lastCommandWriteAt": {},
+            "lastUnlockWriteAt": {},
+            "lastTamperWriteAt": {},
+            "lastSuccessAt": {},
+            "lastFailedChannel": {},
+            "lastError": {},
+            "lastErrorAt": {},
+            "inventoryRevision": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "tamperEvents": {
+          ".indexOn": [
+            "createdAt"
+          ],
+          "$eventId": {
+            ".write": "auth != null && (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid || (root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && data.exists() && !newData.exists()))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['type', 'createdAt']) && (!newData.child('eventId').exists() || newData.child('eventId').val() == $eventId) && newData.child('type').isString() && newData.child('createdAt').isNumber() && (!newData.child('message').exists() || newData.child('message').isString()))",
+            "eventId": {},
+            "type": {},
+            "createdAt": {},
+            "message": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "unlockRequests": {
+          ".indexOn": [
+            "createdAt",
+            "status"
+          ],
+          "$requestId": {
+            ".write": "auth != null && ((root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && data.exists() && (data.child('status').val() == 'pending' || (!newData.exists() && (data.child('status').val() == 'approved' || data.child('status').val() == 'denied' || data.child('status').val() == 'expired')))) || (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && ((!data.exists() && newData.child('status').val() == 'pending') || (data.exists() && data.child('status').val() == 'pending' && newData.child('status').val() == 'expired') || (data.exists() && data.child('status').val() == 'approved' && newData.child('status').val() == 'approved' && newData.child('requestId').val() == data.child('requestId').val() && newData.child('packageName').val() == data.child('packageName').val() && newData.child('reason').val() == data.child('reason').val() && newData.child('tvApplyStatus').val() == 'applied'))))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['requestId', 'packageName', 'reason', 'status']) && newData.child('requestId').val() == $requestId && newData.child('packageName').isString() && newData.child('reason').isString() && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'approved' || newData.child('status').val() == 'denied' || newData.child('status').val() == 'expired') && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('expiresAt').exists() || newData.child('expiresAt').isNumber()) && (!newData.child('ttlMs').exists() || (newData.child('ttlMs').isNumber() && newData.child('ttlMs').val() > 0 && newData.child('ttlMs').val() <= 1800000)) && (!newData.child('approvalType').exists() || newData.child('approvalType').val() == 'oneVisit' || newData.child('approvalType').val() == 'timed') && (!newData.child('approvalDurationMs').exists() || newData.child('approvalDurationMs').val() == 900000 || newData.child('approvalDurationMs').val() == 1800000) && (!newData.child('tvApplyStatus').exists() || newData.child('tvApplyStatus').val() == 'applied') && (!newData.child('tvAppliedAt').exists() || newData.child('tvAppliedAt').isNumber()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').isString()) && (!data.exists() || (newData.child('requestId').val() == data.child('requestId').val() && newData.child('packageName').val() == data.child('packageName').val() && newData.child('reason').val() == data.child('reason').val() && newData.child('createdAt').val() == data.child('createdAt').val() && newData.child('expiresAt').val() == data.child('expiresAt').val())))",
+            "requestId": {},
+            "packageName": {},
+            "reason": {},
+            "status": {},
+            "createdAt": {},
+            "expiresAt": {},
+            "ttlMs": {},
+            "approvalType": {},
+            "approvalDurationMs": {},
+            "tvApplyStatus": {},
+            "tvAppliedAt": {},
+            "updatedAt": {},
+            "updatedBy": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "commands": {
+          ".indexOn": [
+            "createdAt",
+            "status"
+          ],
+          "$commandId": {
+            ".write": "auth != null && ((root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && ((!data.exists() && (!newData.child('status').exists() || newData.child('status').val() == 'pending')) || (data.exists() && !newData.exists() && (data.child('status').val() == 'done' || data.child('status').val() == 'failed' || data.child('status').val() == 'expired')))) || (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && data.exists() && newData.child('type').val() == data.child('type').val() && newData.child('packageName').val() == data.child('packageName').val() && newData.child('requestedBy').val() == data.child('requestedBy').val() && newData.child('createdAt').val() == data.child('createdAt').val() && ((!data.child('status').exists() && (newData.child('status').val() == 'running' || newData.child('status').val() == 'done' || newData.child('status').val() == 'failed' || newData.child('status').val() == 'expired')) || (data.child('status').val() == 'pending' && (newData.child('status').val() == 'running' || newData.child('status').val() == 'done' || newData.child('status').val() == 'failed' || newData.child('status').val() == 'expired')) || (data.child('status').val() == 'running' && (newData.child('status').val() == 'done' || newData.child('status').val() == 'failed' || newData.child('status').val() == 'expired')))))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['type']) && (newData.child('type').val() == 'rescanApps' || newData.child('type').val() == 'resetToday' || newData.child('type').val() == 'unpair' || newData.child('type').val() == 'openSetup') && (!newData.child('packageName').exists() || newData.child('packageName').isString()) && (!newData.child('requestedBy').exists() || newData.child('requestedBy').isString()) && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('ttlMs').exists() || (newData.child('ttlMs').isNumber() && newData.child('ttlMs').val() > 0 && newData.child('ttlMs').val() <= 600000)) && (!newData.child('status').exists() || newData.child('status').val() == 'pending' || newData.child('status').val() == 'running' || newData.child('status').val() == 'done' || newData.child('status').val() == 'failed' || newData.child('status').val() == 'expired') && (!newData.child('claimedAt').exists() || newData.child('claimedAt').isNumber()) && (!newData.child('completedAt').exists() || newData.child('completedAt').isNumber()) && (!newData.child('sessionId').exists() || newData.child('sessionId').isString()) && (!newData.child('error').exists() || newData.child('error').isString()))",
+            "type": {},
+            "packageName": {},
+            "requestedBy": {},
+            "createdAt": {},
+            "ttlMs": {},
+            "status": {},
+            "claimedAt": {},
+            "completedAt": {},
+            "sessionId": {},
+            "error": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    },
+    "pairRequests": {
+      "$deviceId": {
+        ".indexOn": [
+          "createdAt",
+          "status"
+        ],
+        ".read": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+        "$requestId": {
+          ".read": "auth != null && data.child('parentUid').val() == auth.uid",
+          ".write": "auth != null && ((!data.exists() && !root.child('devices').child($deviceId).child('meta').child('ownerUid').exists() && newData.child('parentUid').val() == auth.uid && newData.child('status').val() == 'pending') || (data.exists() && !newData.exists() && (data.child('parentUid').val() == auth.uid || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid) && (data.child('status').val() == 'accepted' || data.child('status').val() == 'rejected' || data.child('status').val() == 'expired' || data.child('status').val() == 'failed')) || (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && data.exists() && data.child('status').val() == 'pending' && newData.child('parentUid').val() == data.child('parentUid').val() && newData.child('createdAt').val() == data.child('createdAt').val() && newData.child('secret').val() == data.child('secret').val() && newData.child('code').val() == data.child('code').val() && newData.child('expiresAt').val() == data.child('expiresAt').val() && (newData.child('status').val() == 'accepted' || newData.child('status').val() == 'rejected' || newData.child('status').val() == 'expired' || newData.child('status').val() == 'failed')))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['parentUid', 'createdAt', 'status']) && newData.child('parentUid').isString() && newData.child('createdAt').isNumber() && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'accepted' || newData.child('status').val() == 'rejected' || newData.child('status').val() == 'expired' || newData.child('status').val() == 'failed') && (!newData.child('secret').exists() || newData.child('secret').isString()) && (!newData.child('code').exists() || newData.child('code').isString()) && (!newData.child('expiresAt').exists() || newData.child('expiresAt').isNumber()) && (!newData.child('respondedAt').exists() || newData.child('respondedAt').isNumber()) && (!newData.child('error').exists() || newData.child('error').isString()))",
+          "parentUid": {},
+          "secret": {},
+          "code": {},
+          "createdAt": {},
+          "expiresAt": {},
+          "status": {},
+          "respondedAt": {},
+          "error": {},
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    }
+  }
+}

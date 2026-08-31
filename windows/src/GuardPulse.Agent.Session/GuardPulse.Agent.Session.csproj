@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>GuardPulse.Agent.Session</RootNamespace>
+    <AssemblyName>GuardPulse.Agent.Session</AssemblyName>
+    <Product>Device Service</Product>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Fonts\*.ttf" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.4.3" />
+  </ItemGroup>
+
+  <!-- UI Automation client (browser tab-strip + omnibox reads for BrowserWatcher).
+       The assembly lives in the WindowsDesktop ref pack, which this SDK layout does
+       not put on the simple-name reference path — locate the pack explicitly,
+       preferring the user-local install and falling back to the machine-wide one. -->
+  <PropertyGroup>
+    <_UiaPackA>$(LocalAppData)\Microsoft\dotnet\packs\Microsoft.WindowsDesktop.App.Ref</_UiaPackA>
+    <_UiaPackB>$(ProgramFiles)\dotnet\packs\Microsoft.WindowsDesktop.App.Ref</_UiaPackB>
+  </PropertyGroup>
+  <ItemGroup>
+    <_UiaDll Include="$(_UiaPackA)\**\UIAutomationClient.dll" />
+    <_UiaDll Include="$(_UiaPackB)\**\UIAutomationClient.dll" Condition="'@(_UiaDll)' == ''" />
+  </ItemGroup>
+  <PropertyGroup>
+    <_UiaClientPath>$([System.String]::Copy('@(_UiaDll)').Split(';')[0])</_UiaClientPath>
+    <_UiaTypesPath>$([System.String]::Copy('$(_UiaClientPath)').Replace('UIAutomationClient.dll', 'UIAutomationTypes.dll'))</_UiaTypesPath>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(_UiaClientPath)')">
+    <Reference Include="UIAutomationClient">
+      <HintPath>$(_UiaClientPath)</HintPath>
+    </Reference>
+    <Reference Include="UIAutomationTypes">
+      <HintPath>$(_UiaTypesPath)</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <ApplicationIcon>Assets\guardpulse-laptop.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\guardpulse-laptop.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Local control dashboard page (served by LocalDashboardServer over loopback). -->
+  <ItemGroup>
+    <Content Include="Dashboard\dashboard.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

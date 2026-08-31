@@ -1,0 +1,152 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!--
+      "Digital Pulse" design tokens (windows/design/digital_pulse/DESIGN.md).
+      Light glassmorphism: frosted surfaces, Digital Blue primary, Hanken Grotesk.
+      Every restyled surface must take colors, radii and fonts from this dictionary.
+    -->
+
+    <!-- Font families (embedded TTFs; weights map to separate families) -->
+    <FontFamily x:Key="Font.Sans">/GuardPulse.Agent.Session;component/Fonts/HankenGrotesk-Regular.ttf#Hanken Grotesk</FontFamily>
+    <FontFamily x:Key="Font.Sans.Medium">/GuardPulse.Agent.Session;component/Fonts/HankenGrotesk-Medium.ttf#Hanken Grotesk Medium</FontFamily>
+    <FontFamily x:Key="Font.Sans.SemiBold">/GuardPulse.Agent.Session;component/Fonts/HankenGrotesk-SemiBold.ttf#Hanken Grotesk SemiBold</FontFamily>
+    <FontFamily x:Key="Font.Sans.Bold">/GuardPulse.Agent.Session;component/Fonts/HankenGrotesk-Bold.ttf#Hanken Grotesk Bold</FontFamily>
+    <!-- Windows built-in icon font (lock, chevrons) -->
+    <FontFamily x:Key="Font.Icons">Segoe MDL2 Assets</FontFamily>
+
+    <!-- Palette -->
+    <Color x:Key="Color.Primary">#0058BC</Color>
+    <Color x:Key="Color.PrimaryContainer">#0070EB</Color>
+    <Color x:Key="Color.OnPrimary">#FFFFFF</Color>
+    <Color x:Key="Color.Secondary">#006E28</Color>
+    <Color x:Key="Color.Error">#BA1A1A</Color>
+    <Color x:Key="Color.Surface">#FCF8FB</Color>
+    <Color x:Key="Color.SurfaceContainer">#F0EDEF</Color>
+    <Color x:Key="Color.SurfaceContainerLowest">#FFFFFF</Color>
+    <Color x:Key="Color.OnSurface">#1B1B1D</Color>
+    <Color x:Key="Color.OnSurfaceVariant">#414755</Color>
+    <Color x:Key="Color.Outline">#717786</Color>
+    <Color x:Key="Color.OutlineVariant">#C1C6D7</Color>
+    <Color x:Key="Color.DigitalBlueTint">#E5F1FF</Color>
+    <Color x:Key="Color.GlassBorder">#26FFFFFF</Color>
+
+    <SolidColorBrush x:Key="Brush.Primary" Color="{StaticResource Color.Primary}"/>
+    <SolidColorBrush x:Key="Brush.PrimaryContainer" Color="{StaticResource Color.PrimaryContainer}"/>
+    <SolidColorBrush x:Key="Brush.OnPrimary" Color="{StaticResource Color.OnPrimary}"/>
+    <SolidColorBrush x:Key="Brush.Secondary" Color="{StaticResource Color.Secondary}"/>
+    <SolidColorBrush x:Key="Brush.Error" Color="{StaticResource Color.Error}"/>
+    <SolidColorBrush x:Key="Brush.Surface" Color="{StaticResource Color.Surface}"/>
+    <SolidColorBrush x:Key="Brush.SurfaceContainer" Color="{StaticResource Color.SurfaceContainer}"/>
+    <SolidColorBrush x:Key="Brush.SurfaceContainerLowest" Color="{StaticResource Color.SurfaceContainerLowest}"/>
+    <SolidColorBrush x:Key="Brush.OnSurface" Color="{StaticResource Color.OnSurface}"/>
+    <SolidColorBrush x:Key="Brush.OnSurfaceVariant" Color="{StaticResource Color.OnSurfaceVariant}"/>
+    <SolidColorBrush x:Key="Brush.Outline" Color="{StaticResource Color.Outline}"/>
+    <SolidColorBrush x:Key="Brush.OutlineVariant" Color="{StaticResource Color.OutlineVariant}"/>
+    <SolidColorBrush x:Key="Brush.DigitalBlueTint" Color="{StaticResource Color.DigitalBlueTint}"/>
+
+    <!-- Glass surfaces (semi-transparent; pair with the acrylic window backdrop) -->
+    <SolidColorBrush x:Key="Brush.GlassFill" Color="#80FFFFFF"/>
+    <SolidColorBrush x:Key="Brush.GlassCardFill" Color="#59FFFFFF"/>
+    <SolidColorBrush x:Key="Brush.GlassBorder" Color="{StaticResource Color.GlassBorder}"/>
+    <SolidColorBrush x:Key="Brush.HoverFill" Color="#80E4E2E4"/>
+
+    <!-- Text styles (from DESIGN.md typography) -->
+    <Style x:Key="Text.HeadlineLg" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.SemiBold}"/>
+        <Setter Property="FontSize" Value="32"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurface}"/>
+    </Style>
+    <Style x:Key="Text.HeadlineMd" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.SemiBold}"/>
+        <Setter Property="FontSize" Value="24"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurface}"/>
+    </Style>
+    <Style x:Key="Text.BodyLg" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans}"/>
+        <Setter Property="FontSize" Value="18"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurface}"/>
+    </Style>
+    <Style x:Key="Text.BodyMd" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans}"/>
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurfaceVariant}"/>
+    </Style>
+    <Style x:Key="Text.LabelMd" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.Medium}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurfaceVariant}"/>
+    </Style>
+    <Style x:Key="Text.LabelSmCaps" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.Medium}"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Outline}"/>
+    </Style>
+
+    <!-- Pill button (outline, e.g. Ask Parent to Unlock) -->
+    <Style x:Key="Button.Pill" TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.Medium}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurface}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Padding" Value="24,10"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="999" BorderThickness="1"
+                            BorderBrush="{StaticResource Brush.OutlineVariant}"
+                            Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource Brush.HoverFill}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Circular keypad key (lock screen) -->
+    <Style x:Key="Button.Keypad" TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Sans.Medium}"/>
+        <Setter Property="FontSize" Value="28"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.OnSurface}"/>
+        <Setter Property="Width" Value="72"/>
+        <Setter Property="Height" Value="72"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="999" Background="Transparent">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource Brush.HoverFill}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#B3E4E2E4"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Numbered step circle (setup window) -->
+    <Style x:Key="StepCircle" TargetType="Border">
+        <Setter Property="Width" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="CornerRadius" Value="999"/>
+        <Setter Property="Background" Value="{StaticResource Brush.Primary}"/>
+        <Setter Property="VerticalAlignment" Value="Top"/>
+    </Style>
+</ResourceDictionary>

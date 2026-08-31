@@ -1,0 +1,17 @@
+# GuardPulse content blocklist: social
+facebook.com
+www.facebook.com
+instagram.com
+www.instagram.com
+tiktok.com
+www.tiktok.com
+snapchat.com
+www.snapchat.com
+x.com
+twitter.com
+www.x.com
+www.twitter.com
+discord.com
+www.discord.com
+reddit.com
+www.reddit.com

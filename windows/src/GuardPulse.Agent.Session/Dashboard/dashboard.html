@@ -1,0 +1,1476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GuardPulse Console</title>
+<style>
+  /* ===== GuardPulse design system (ported from the Stitch Parent Console export) ===== */
+  :root {
+    --bg: #f7f9fb;            /* page canvas        */
+    --card: #ffffff;          /* card surface       */
+    --low: #f2f4f6;           /* quiet containers   */
+    --container: #eceef0;
+    --high: #e6e8ea;          /* hover / chips      */
+    --highest: #e0e3e5;
+    --line: #c5c6cd;          /* universal border   */
+    --line-strong: #75777d;
+    --text: #191c1e;          /* body               */
+    --primary: #091426;       /* headings / dark    */
+    --muted: #45474c;         /* secondary text     */
+    --faint: #75777d;
+    --accent: #0058be;        /* primary action     */
+    --accent-hover: #2170e4;
+    --accent-ring: rgba(0, 88, 190, .16);
+    --brand: #1e293b;         /* brand slate        */
+    --danger: #ba1a1a;
+    --danger-hover: #8c1414;
+    --danger-ghost: #ffdad6;
+    --ok-text: #047857; --ok-bg: #ecfdf5; --ok-border: #a7f3d0; --ok-dot: #10b981;
+    --bad-text: #93000a; --bad-bg: #ffdad6; --bad-border: #f3b4b4;
+    --warn-text: #92400e; --warn-bg: #fef3c7; --warn-border: #fde68a; --warn-dot: #f59e0b;
+    --banner-bg: #1a2a3e; --banner-text: #d3e4fe; --banner-icon: #d8e2ff;
+    --font: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Mono", Consolas, "SF Mono", ui-monospace, monospace;
+    --shadow-sm: 0 1px 2px rgba(9, 20, 38, .06);
+    --shadow-lg: 0 10px 15px -3px rgba(9, 20, 38, .12), 0 4px 6px -2px rgba(9, 20, 38, .06);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.45; }
+  .hidden { display: none !important; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12.5px; }
+  .mono { font-family: var(--mono); }
+  .err { color: var(--danger); }
+  .ok { color: var(--ok-text); }
+  .spacer { flex: 1; }
+  .center { text-align: center; padding: 72px 20px; color: var(--muted); }
+  a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+  /* ===== Buttons ===== */
+  button { font: inherit; color: var(--text); background: var(--low); border: 1px solid var(--line);
+           padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; }
+  button:hover { background: var(--high); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+  button.danger:hover { background: var(--danger-hover); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--high); color: var(--primary); }
+  button.ghost.danger { color: var(--danger); }
+  button.ghost.danger:hover { background: var(--danger-ghost); color: var(--bad-text); }
+  button.mini { padding: 5px 11px; font-size: 12.5px; border-radius: 6px; }
+  button[disabled] { opacity: .45; pointer-events: none; }
+  body.busy #app button, body.busy #deviceList button { opacity: .5; pointer-events: none; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .icon { flex: none; vertical-align: -3px; }
+
+  /* ===== Inputs ===== */
+  input, select { font: inherit; color: var(--text); background: #fff; border: 1px solid var(--line);
+                  border-radius: 8px; padding: 9px 12px; }
+  input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+  input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; padding: 0; }
+  input[type="number"] { font-family: var(--mono); font-size: 13px; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  /* ===== Toggle switch ===== */
+  .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .track { width: 36px; height: 20px; border-radius: 999px; background: #d8dadc; position: relative; transition: background .15s; flex: none; }
+  .switch .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 999px;
+                  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track .knob { transform: translateX(16px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ===== Top bar ===== */
+  .topbar { position: sticky; top: 0; z-index: 5; background: #fff; border-bottom: 1px solid var(--line);
+            height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 24px; }
+  .topbar .brand { display: flex; align-items: center; gap: 10px; }
+  .topbar .brand b { font-size: 17px; font-weight: 800; color: var(--primary); letter-spacing: -.01em; }
+  #hdrScope { color: var(--muted); font-size: 13px; }
+
+  /* ===== Logo (single embedded data URI) ===== */
+  .logo-img { display: inline-block; background: url("data:image/png;base64,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") center/contain no-repeat; }
+  .logo-28 { width: 28px; height: 28px; border-radius: 6px; }
+  .logo-36 { width: 36px; height: 36px; border-radius: 8px; }
+  .logo-72 { width: 72px; height: 72px; border-radius: 16px; box-shadow: var(--shadow-sm); }
+
+  /* ===== Sidebar (real destinations only) ===== */
+  .sidenav { display: none; position: fixed; left: 0; top: 0; bottom: 0; width: 240px; background: var(--low);
+             border-right: 1px solid var(--line); padding: 18px 12px; flex-direction: column; gap: 4px; z-index: 6; }
+  .sidenav-brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 16px; }
+  .sidenav-brand b { display: block; font-size: 15px; font-weight: 700; color: var(--primary); }
+  .sidenav-brand span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); }
+  .sidenav-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border-radius: 8px;
+                  background: transparent; border: none; color: var(--muted); font-weight: 600; font-size: 13.5px; text-align: left; }
+  .sidenav-item:hover { background: var(--high); color: var(--primary); }
+  body.scope-device .sidenav-item[data-nav="devices"], body.scope-local .sidenav-item[data-nav="local"] {
+    background: var(--accent); color: #fff; }
+  body.scope-device .sidenav-item[data-nav="devices"]:hover, body.scope-local .sidenav-item[data-nav="local"]:hover {
+    background: var(--accent-hover); color: #fff; }
+  .sidenav-foot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px; }
+  .sidenav-foot .sidenav-item { display: none; }
+  body.scope-device #sideSignOut { display: flex; }
+  body.scope-local #sideLock { display: flex; }
+  @media (min-width: 1000px) {
+    body.view-shell .sidenav { display: flex; }
+    body.view-shell .shell { margin-left: 240px; }
+  }
+
+  /* ===== Page scaffolding ===== */
+  .shell { min-height: 100vh; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px; width: 100%; }
+  .page-head { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 20px; }
+  .page-head h1, .display { font-size: 26px; font-weight: 800; color: var(--primary); margin: 0; letter-spacing: -.02em; }
+
+  /* ===== Cards ===== */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); }
+  .card-head { display: flex; align-items: center; gap: 9px; padding: 15px 20px; border-bottom: 1px solid var(--line);
+               background: #fbfcfd; border-radius: 12px 12px 0 0; }
+  .card-head h2 { margin: 0; font-size: 15px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+  .card-head h2 .icon { color: var(--accent); }
+  .card-body { padding: 20px; }
+  .card > h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .count { min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--high);
+           color: var(--muted); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ===== Pills / chips ===== */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+          text-transform: uppercase; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line);
+          background: var(--highest); color: var(--muted); white-space: nowrap; }
+  .pill .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--line-strong); flex: none; }
+  .pill.on { background: var(--ok-bg); color: var(--ok-text); border-color: var(--ok-border); }
+  .pill.on .dot { background: var(--ok-dot); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad-text); border-color: var(--bad-border); }
+  .pill.bad .dot { background: var(--danger); }
+  .pill.off { background: var(--highest); color: var(--muted); }
+  .pill.off .dot { background: var(--line-strong); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn-text); border-color: var(--warn-border); }
+  .pill.warn .dot { background: var(--warn-dot); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12.5px;
+          padding: 3px 8px; border-radius: 4px; background: var(--high); border: 1px solid var(--line);
+          color: var(--primary); white-space: nowrap; }
+  .chip.bad { background: #fff5f5; border-color: var(--bad-border); color: var(--danger); }
+
+  /* ===== Banner ===== */
+  .banner { display: flex; align-items: center; gap: 10px; background: var(--banner-bg); color: var(--banner-text);
+            border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 13.5px; font-weight: 500; box-shadow: var(--shadow-sm); }
+  .banner .icon { color: var(--banner-icon); }
+  .banner .spin { animation: rot 1s linear infinite; }
+  .banner.delayed { background: var(--danger-ghost); color: var(--bad-text); }
+  .banner.delayed .icon { color: var(--danger); }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  .spin { animation: rot 1s linear infinite; }
+  .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent);
+             border-radius: 999px; animation: rot 1s linear infinite; margin: 0 auto 14px; }
+
+  /* ===== Console grid ===== */
+  .console-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; align-items: start; }
+  .console-grid > section { min-width: 0; }
+  .cg-rail { grid-column: span 3; display: flex; flex-direction: column; gap: 20px; }
+  .cg-apps { grid-column: span 9; }
+  .cg-modes { grid-column: span 4; display: flex; flex-direction: column; }
+  .cg-modes .card { height: 100%; }
+  /* An open mode editor needs the full row: its 5-column table cannot fit a 4/12 card. */
+  .cg-modes.span-full { grid-column: 1 / -1; }
+  .cg-rules { grid-column: span 8; }
+  .cg-events { grid-column: span 12; }
+  @media (max-width: 1080px) {
+    .cg-rail, .cg-apps, .cg-modes, .cg-rules, .cg-events { grid-column: span 12; }
+  }
+
+  /* ===== Status card ===== */
+  .status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0;
+                border-bottom: 1px dashed var(--highest); font-size: 13.5px; }
+  .status-row:last-child { border-bottom: none; }
+  .status-row .label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .status-row .value { display: inline-flex; align-items: center; gap: 8px; color: var(--primary); font-weight: 500; }
+  .tablist summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase;
+                     letter-spacing: .05em; padding: 8px 0; }
+  .card-body.muted .status-row .value { color: var(--muted); }
+
+  /* ===== Pending requests ===== */
+  .reqrow { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #fff; margin-bottom: 10px; }
+  .reqrow:last-child { margin-bottom: 0; }
+  .reqrow.critical { border-color: var(--bad-border); background: #fff7f7; }
+  .req-top { display: flex; align-items: center; gap: 10px; }
+  .req-title { font-weight: 600; color: var(--primary); }
+  .req-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff;
+           font-size: 11.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ===== Apps table ===== */
+  .card-tools { display: flex; align-items: center; gap: 10px; padding: 14px 20px 0; }
+  .search-wrap { position: relative; flex: 1; max-width: 300px; }
+  .search-wrap .icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  .search-wrap input { width: 100%; padding-left: 34px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 12px;
+       border-bottom: 1px solid var(--line); background: #fbfcfd; white-space: nowrap; }
+  th.right, td.right { text-align: right; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--highest); vertical-align: middle; font-size: 13.5px; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background .12s; }
+  tbody tr:hover { background: var(--bg); }
+  tbody tr.rowbad { background: #fff7f7; }
+  tbody tr.rowbad:hover { background: #ffeeee; }
+  .app-cell { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--primary); }
+  .app-tile { width: 30px; height: 30px; border-radius: 6px; background: #f1f5f9; border: 1px solid var(--line);
+              display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
+              color: var(--brand); flex: none; }
+  td .row { gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+  .cell-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-start; }
+  #appTable select { padding: 5px 6px; font-size: 12.5px; border-radius: 6px; }
+  #appTable td .app-cell span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+
+  /* ===== Modes ===== */
+  .modes-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+  .modebox { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: #fff; }
+  .modebox.active { border: 2px solid var(--accent); background: rgba(0, 88, 190, .04); }
+  .modehead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .modehead b { color: var(--primary); font-size: 15px; }
+  .modebody { margin-top: 12px; border-top: 1px dashed var(--highest); padding-top: 12px; }
+
+  /* ===== Device rules card ===== */
+  .rules-grid { display: grid; grid-template-columns: 1fr 1fr; }
+  .rule-sec { padding: 18px 20px; border-top: 1px solid var(--highest); min-width: 0; }
+  .rule-sec:nth-child(odd) { border-right: 1px solid var(--highest); }
+  .rule-sec:first-child, .rule-sec:nth-child(2) { border-top: none; }
+  .rule-sec.span2 { grid-column: 1 / -1; }
+  .rule-sec:nth-child(odd):first-child { border-right: 1px solid var(--highest); }
+  .sec-title { margin: 0 0 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .sec-title .icon { color: var(--accent); }
+  @media (max-width: 760px) {
+    .rules-grid { grid-template-columns: 1fr; }
+    .rule-sec:nth-child(odd) { border-right: none; }
+    .rule-sec:nth-child(2) { border-top: 1px solid var(--highest); }
+  }
+
+  /* ===== Device list ===== */
+  .dev-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+  .dev { background: #fff; border: 1px solid var(--highest); border-radius: 12px; padding: 20px; cursor: pointer;
+         position: relative; overflow: hidden; transition: transform .15s, box-shadow .15s, border-color .15s; }
+  .dev:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--line); }
+  .dev-strip { position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--highest); }
+  .dev-strip.on { background: var(--accent); }
+  .dev .name { font-size: 17px; font-weight: 700; color: var(--primary); margin: 10px 0 2px; }
+  .dev .meta { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 12px; }
+  .tile { background: var(--bg); border: 1px solid var(--highest); border-radius: 8px; padding: 9px 10px; min-width: 0; }
+  .tile span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin-bottom: 3px; }
+  .tile b { font-size: 12px; font-weight: 600; color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  .dev-foot { display: flex; align-items: center; gap: 8px; }
+  .empty-dash { border: 2px dashed var(--line); border-radius: 12px; padding: 44px 20px; text-align: center;
+                color: var(--muted); background: #fff; margin-top: 16px; }
+
+  /* ===== Landing ===== */
+  .landing-wrap { max-width: 440px; margin: 40px auto 0; text-align: center; }
+  .landing-wrap .display { margin: 16px 0 4px; }
+  .landing-sub { color: var(--muted); margin: 0 0 22px; }
+  .auth-card { text-align: left; padding: 22px; }
+  .auth-card input { width: 100%; }
+  .or-divider { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 12px;
+                text-transform: uppercase; letter-spacing: .08em; margin: 18px 2px; }
+  .or-divider::before, .or-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .quick-card { text-align: left; padding: 18px 22px; }
+
+  /* ===== Modals / toast ===== */
+  .modal { position: fixed; inset: 0; background: rgba(9, 20, 38, .45); backdrop-filter: blur(6px);
+           display: flex; align-items: center; justify-content: center; z-index: 30; padding: 20px; }
+  .modal .box { background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg);
+                padding: 24px; width: 100%; max-width: 360px; }
+  .modal h3 { margin: 0 0 8px; font-size: 19px; font-weight: 700; color: var(--primary); }
+  .pin-box { max-width: 380px; text-align: center; }
+  .pin-icon { width: 64px; height: 64px; border-radius: 999px; background: #d8e3fb; color: var(--primary);
+              display: flex; align-items: center; justify-content: center; margin: 0 auto 14px; }
+  .pin-box .field input { letter-spacing: .45em; text-align: center; font-family: var(--mono); font-size: 16px; }
+  .pin-box .row { justify-content: center; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--primary); color: #fff;
+           padding: 10px 18px; border-radius: 999px; font-size: 13.5px; opacity: 0; transition: opacity .2s;
+           pointer-events: none; z-index: 20; box-shadow: var(--shadow-lg); }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar: real destinations only -->
+<aside id="sideNav" class="sidenav">
+  <div class="sidenav-brand">
+    <span class="logo-img logo-36"></span>
+    <span><b>GuardPulse</b><span>Parental control</span></span>
+  </div>
+  <button class="sidenav-item" data-nav="devices" onclick="navDevices()"><span id="navDevIcon"></span>Devices</button>
+  <button class="sidenav-item" data-nav="local" onclick="startLocal()"><span id="navLocalIcon"></span>This laptop</button>
+  <div class="sidenav-foot">
+    <button class="sidenav-item" id="sideSignOut" onclick="signOut()"><span id="navOutIcon"></span>Sign out</button>
+    <button class="sidenav-item" id="sideLock" onclick="lockConsole()"><span id="navLockIcon"></span>Lock console</button>
+  </div>
+</aside>
+
+<div class="shell">
+<header class="topbar">
+  <span class="brand"><span class="logo-img logo-28"></span><b>GuardPulse</b></span>
+  <span id="hdrScope" class="small"></span>
+  <span class="spacer"></span>
+  <button id="btnBack" class="ghost hidden" onclick="goBack()">&#8592; Devices</button>
+  <button id="btnHome" class="ghost" onclick="goHome()">Home</button>
+  <button id="btnLock" class="ghost hidden" onclick="lockConsole()">Lock console</button>
+  <button id="btnSignOut" class="ghost hidden" onclick="signOut()">Sign out</button>
+</header>
+
+<!-- Landing -->
+<main id="landing">
+  <div class="landing-wrap">
+    <span class="logo-img logo-72"></span>
+    <h1 class="display">GuardPulse</h1>
+    <p class="landing-sub small">Parent console — sign in with your parent account to see and control every device
+    (this laptop and your other laptops / TVs), exactly like the phone.</p>
+    <div class="card auth-card">
+      <div class="field">
+        <label class="small" for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label class="small" for="password">Password</label>
+        <input id="password" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" />
+      </div>
+      <div class="row">
+        <button class="primary" onclick="signInParent()">Sign in</button>
+        <span id="loginErr" class="err small" role="alert"></span>
+      </div>
+    </div>
+    <div class="or-divider"><span>or</span></div>
+    <div class="card quick-card">
+      <p class="muted small" style="margin:0 0 10px">Just want to control <b>this laptop</b> with its PIN?</p>
+      <button onclick="startLocal()">Control this laptop (PIN)</button>
+    </div>
+  </div>
+</main>
+
+<!-- Device list -->
+<main id="deviceList" class="hidden">
+  <div class="page-head"><h1>Your devices</h1><span id="devCount" class="muted small"></span></div>
+  <div id="devGrid" class="dev-grid"></div>
+  <div id="devEmpty" class="muted small" style="margin-top:12px"></div>
+</main>
+
+<!-- Loading -->
+<main id="loading" class="hidden"><div class="center"><div class="spinner"></div><div id="loadMsg">Loading…</div></div></main>
+
+<!-- Controls -->
+<main id="app" class="hidden"></main>
+</div>
+
+<!-- PIN modal -->
+<div id="pinModal" class="modal hidden">
+  <div class="box pin-box">
+    <div class="pin-icon"><span id="pinIconGlyph"></span></div>
+    <h3>Enter PIN</h3>
+    <p class="muted small" style="margin:0 0 14px">Local access to this laptop's console</p>
+    <div class="field">
+      <input id="pinInput" type="password" inputmode="numeric" maxlength="6" style="width:60%" onkeydown="if(event.key==='Enter')submitPin()" />
+    </div>
+    <div class="row">
+      <button class="primary" onclick="submitPin()">Unlock</button>
+      <span id="pinErr" class="err small" role="alert"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Generic confirm / prompt modal -->
+<div id="modal" class="modal hidden">
+  <div class="box">
+    <h3 id="mTitle"></h3>
+    <p id="mBody" class="muted small" style="margin-top:0"></p>
+    <div id="mInputWrap" class="field hidden">
+      <label id="mLabel" class="small" for="mInput"></label>
+      <input id="mInput" style="width:100%" onkeydown="if(event.key==='Enter')modalOk()" />
+    </div>
+    <div class="row">
+      <button id="mOk" class="primary">OK</button>
+      <button id="mCancel" class="ghost">Cancel</button>
+      <span id="mErr" class="err small" role="alert"></span>
+    </div>
+  </div>
+</div>
+
+<div id="toast" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+let SCOPE = null;            // {kind:'local'} | {kind:'device', deviceId}
+let STATE = null;            // current control state DTO
+let DEVICES = [];            // device list
+let ES = null;               // EventSource (live updates)
+let POLL = null;             // fallback poll interval id
+let lastRenderKey = "";      // skip re-render when the state JSON did not change
+let renderDeferred = false;  // a re-render is pending until the user stops editing
+let pendingRevision = null;  // control revision written, awaiting the device's ack
+let pendingSince = 0;
+let pendingTimer = null;
+let modalResolve = null;
+
+// Embedded product logo (docs/assets/guardpulse-logo.png, downscaled; data URI so the
+// offline CSP (img-src 'self' data:) allows it without a server route).
+const LOGO_URI = "data:image/png;base64,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";
+
+// Inline SVG icon set (feather-style strokes, currentColor) — replaces the external
+// Material Symbols font the Stitch export used, which the offline CSP cannot load.
+const ICONS = {
+  back: '<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>',
+  sync: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  unlock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  warning: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  devices: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+  laptop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  tune: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  check: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+  apps: '<line x1="4" y1="4" x2="10" y2="4"/><line x1="4" y1="10" x2="10" y2="10"/><line x1="4" y1="16" x2="10" y2="16"/><line x1="14" y1="4" x2="20" y2="4"/><line x1="14" y1="10" x2="20" y2="10"/><line x1="14" y1="16" x2="20" y2="16"/>',
+};
+function icon(name, size){
+  const p = ICONS[name];
+  if (!p) return "";
+  const s = size || 18;
+  return '<svg class="icon" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+}
+
+function show(id){
+  ["landing","deviceList","loading","app"].forEach(m => $(m).classList.toggle("hidden", m!==id));
+  // Chrome wiring for the sidebar (visual only).
+  const b = document.body;
+  b.classList.toggle("view-shell", !!(SCOPE && (id === "deviceList" || id === "app")));
+  b.classList.toggle("scope-local", !!(SCOPE && SCOPE.kind === "local"));
+  b.classList.toggle("scope-device", !!(SCOPE && SCOPE.kind === "device"));
+}
+function showModal(id, on){ $(id).classList.toggle("hidden", !on); }
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"), 3200); }
+function navDevices(){ if (SCOPE && SCOPE.kind === "device"){ showDeviceList(); } else { goHome(); } }
+
+async function apiGet(url){
+  try{
+    const res = await fetch(url, {credentials:"same-origin"});
+    if (res.status===401){ authExpired(); return {ok:false, error:"Session expired"}; }
+    const j = await res.json().catch(()=>null);
+    if (res.status===200 && j && (j.ok===true || j.deviceId || j.apps !== undefined || Array.isArray(j.devices))) {
+      return Object.assign({ok:true}, j);
+    }
+    return {ok:false, error:(j&&j.error)||("HTTP "+res.status)};
+  }catch(e){ return {ok:false, error:String(e)}; }
+}
+async function apiPost(url, body){
+  try{
+    const res = await fetch(url, {method:"POST", credentials:"same-origin",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{})});
+    if (res.status===401 && url.indexOf("/api/owner/login")!==0){ authExpired(); return {ok:false, error:"Session expired"}; }
+    const j = await res.json().catch(()=>null);
+    if (res.status===200 && j && j.ok===true) return Object.assign({ok:true}, j);
+    return {ok:false, error:(j&&j.error)||("HTTP "+res.status)};
+  }catch(e){ return {ok:false, error:String(e)}; }
+}
+// The owner cookie lasts 24h; when it expires mid-session the UI must go back to
+// the landing screen instead of letting every action fail with "not authorized".
+function authExpired(){
+  const hadScope = !!SCOPE;
+  goHome();
+  if (hadScope) toast("Session expired — sign in again.");
+}
+
+// ----------------------------------------------------------- busy guard
+// One in-flight mutation at a time: every write button is inert while a request
+// runs (double-clicks would send duplicate patches).
+function setBusy(on){ document.body.classList.toggle("busy", on); }
+function busyOn(){ return document.body.classList.contains("busy"); }
+function withBusy(fn){
+  return async (...args) => {
+    if (busyOn()) return;
+    setBusy(true);
+    try { await fn(...args); }
+    finally { setBusy(false); }
+  };
+}
+
+// ----------------------------------------------------------- live updates
+function startLive(){
+  stopLive();
+  if (!SCOPE) return;
+  const dev = SCOPE.kind==="local" ? "local" : SCOPE.deviceId;
+  try{
+    ES = new EventSource("/api/events?device="+encodeURIComponent(dev));
+    ES.addEventListener("state", ev => {
+      try{
+        const data = JSON.parse(ev.data);
+        applyState(data && data.state ? data.state : data);
+        stopPoll();
+      }catch(e){ /* malformed frame; heartbeat will correct */ }
+    });
+    ES.onerror = () => {
+      // readyState 2 = CLOSED (retries exhausted server-side or auth lost):
+      // fall back to slow polling; EventSource otherwise reconnects itself.
+      if (ES && ES.readyState === 2){ ES = null; startPoll(); }
+    };
+  }catch(e){ ES = null; startPoll(); }
+}
+function stopLive(){
+  if (ES){ try{ ES.close(); }catch(e){} ES = null; }
+  stopPoll();
+}
+function startPoll(){
+  if (POLL || !SCOPE) return;
+  POLL = setInterval(() => { if (document.visibilityState === "visible") refresh(true); }, 30000);
+}
+function stopPoll(){ if (POLL){ clearInterval(POLL); POLL = null; } }
+
+// ----------------------------------------------------------- state application
+// serverNow changes on every fetch; everything else must be identical to skip a
+// re-render. Editing inputs are never destroyed mid-typing: the render is deferred.
+function applyState(next){
+  STATE = next;
+  maybeRender();
+}
+function stateKey(){
+  if (!STATE) return "";
+  const copy = Object.assign({}, STATE);
+  delete copy.serverNow;
+  return JSON.stringify(copy) + "|" + (pendingRevision || "");
+}
+function editingBlocked(){
+  const el = document.activeElement;
+  return !!el && $("app").contains(el) &&
+    (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
+}
+function maybeRender(){
+  if (!STATE) return;
+  const key = stateKey();
+  if (key === lastRenderKey) return;
+  if (editingBlocked()){
+    if (!renderDeferred){
+      renderDeferred = true;
+      const check = () => {
+        if (!SCOPE){ renderDeferred = false; return; }
+        if (editingBlocked()){ setTimeout(check, 500); return; }
+        renderDeferred = false;
+        if (stateKey() !== lastRenderKey) render();
+      };
+      setTimeout(check, 800);
+    }
+    return;
+  }
+  render();
+}
+
+// ----------------------------------------------------------- waiting for device
+// Phone parity: after a write, controls pause until the device acks the exact
+// revision (sync/applied). 30s without an ack reads "device connection delayed"
+// and unlocks the UI again (the change may simply be offline-queued).
+function noteWritten(revisionId){
+  if (!revisionId || !SCOPE || SCOPE.kind !== "device") return;
+  pendingRevision = revisionId;
+  pendingSince = Date.now();
+  if (pendingTimer) clearTimeout(pendingTimer);
+  pendingTimer = setTimeout(() => {
+    if (pendingRevision){ pendingRevision = "__timeout__"; if (STATE) render(); }
+  }, 30000);
+}
+function pendingStatus(){
+  if (!pendingRevision || !SCOPE || SCOPE.kind !== "device") return "idle";
+  if (pendingRevision === "__timeout__") return "delayed";
+  if (STATE && STATE.syncStatus === "applied" && STATE.syncRevisionId === pendingRevision){
+    pendingRevision = null;
+    return "idle";
+  }
+  return "waiting";
+}
+
+// ----------------------------------------------------------- navigation
+function goHome(){
+  stopLive();
+  SCOPE=null; STATE=null; pendingRevision=null; lastRenderKey="";
+  show("landing"); setHeader("");
+  $("btnBack").classList.add("hidden");
+  $("btnSignOut").classList.add("hidden");
+  $("btnLock").classList.add("hidden");
+}
+function goBack(){
+  if (SCOPE && SCOPE.kind==="device"){ showDeviceList(); }
+  else goHome();
+}
+function setHeader(txt){ $("hdrScope").textContent = txt||""; }
+
+// ----------------------------------------------------------- owner sign-in
+const signInParent = withBusy(async () => {
+  $("loginErr").textContent = "";
+  const email = $("email").value.trim();
+  const password = $("password").value;
+  if (!email || !password){ $("loginErr").textContent = "Email and password required."; return; }
+  show("loading"); $("loadMsg").textContent = "Signing in…";
+  const r = await apiPost("/api/owner/login", {email, password});
+  if (!r.ok){ show("landing"); $("loginErr").textContent = r.error || "Sign-in failed."; return; }
+  DEVICES = Array.isArray(r.devices) ? r.devices : [];
+  SCOPE = {kind:"device", deviceId:null};
+  showDeviceList();
+});
+
+function showDeviceList(){
+  SCOPE = SCOPE || {kind:"device", deviceId:null};
+  SCOPE.kind = "device"; SCOPE.deviceId = null;
+  stopLive();
+  pendingRevision = null;
+  setHeader("Parent console");
+  $("btnBack").classList.add("hidden");
+  $("btnSignOut").classList.remove("hidden");
+  $("btnLock").classList.add("hidden");
+  show("deviceList");
+  const grid = $("devGrid"); grid.innerHTML = "";
+  $("devCount").textContent = DEVICES.length ? "· " + DEVICES.length + " paired" : "";
+  if (!DEVICES.length){
+    $("devEmpty").textContent = "";
+    $("devEmpty").innerHTML = '<div class="empty-dash"><b>No devices found under this account yet.</b><br/>Pair a device from the phone app and it will appear here.</div>';
+    return;
+  }
+  $("devEmpty").textContent = "";
+  DEVICES.forEach(d=>{
+    const el = document.createElement("div");
+    el.className = "dev";
+    const online = !!d.online;
+    const health = d.protectionHealthy === undefined ? "—" : (d.protectionHealthy ? "Healthy" : "Needs setup");
+    el.innerHTML =
+      '<div class="dev-strip '+(online?"on":"off")+'"></div>'
+      + '<div class="dev-top" style="display:flex;justify-content:flex-end">'
+      +   '<span class="pill '+(online?"on":"off")+'"><span class="dot"></span>'+(online?"online":"offline")+'</span>'
+      + '</div>'
+      + '<div class="name"></div>'
+      + '<div class="meta"></div>'
+      + '<div class="tiles">'
+      +   '<div class="tile"><span>Mode</span><b>'+escapeHtml(d.enforcementMode||"—")+'</b></div>'
+      +   '<div class="tile"><span>Health</span><b>'+escapeHtml(health)+'</b></div>'
+      +   '<div class="tile"><span>Platform</span><b>'+escapeHtml(d.platform||"—")+'</b></div>'
+      + '</div>'
+      + '<div class="dev-foot"><span class="seen muted small"></span><span class="spacer"></span>'
+      +   '<button class="ghost danger mini" onclick="event.stopPropagation(); removeDevice(\''+escapeAttr(d.deviceId)+'\')">Remove</button>'
+      + '</div>';
+    el.querySelector(".name").textContent = d.label || d.deviceId;
+    el.querySelector(".meta").textContent = d.deviceId || "";
+    el.querySelector(".seen").textContent = d.lastSeen ? ("Last seen " + new Date(d.lastSeen).toLocaleString()) : "Never seen";
+    el.onclick = ()=> loadDevice(d.deviceId);
+    grid.appendChild(el);
+  });
+}
+
+const signOut = withBusy(async () => {
+  const yes = await askConfirm("Sign out?", "You will need to sign in again to control your devices.", "Sign out");
+  if (!yes) return;
+  await apiPost("/api/owner/logout", {});
+  goHome();
+});
+
+const lockConsole = withBusy(async () => {
+  await apiPost("/api/logout", {});
+  goHome();
+});
+
+const loadDevice = withBusy(async (id) => {
+  SCOPE = {kind:"device", deviceId:id};
+  pendingRevision = null;
+  setHeader("Loading device…");
+  $("btnBack").classList.remove("hidden");
+  $("btnLock").classList.add("hidden");
+  show("loading"); $("loadMsg").textContent = "Loading device…";
+  const r = await apiGet("/api/device/"+encodeURIComponent(id)+"/state");
+  if (!r.ok){ showDeviceList(); toast("Failed: "+(r.error||"unknown")); return; }
+  STATE = r.state || r;
+  render();
+  show("app");
+  startLive();
+  const label = (STATE.label || id);
+  setHeader("Controlling: " + label + (STATE.online ? " · online" : " · offline"));
+});
+
+// ----------------------------------------------------------- local (this laptop)
+const startLocal = withBusy(async () => {
+  SCOPE = {kind:"local"};
+  pendingRevision = null;
+  setHeader("This laptop");
+  $("btnBack").classList.add("hidden");
+  show("loading"); $("loadMsg").textContent = "Connecting…";
+  const st = await apiGet("/api/state");
+  if (!st.ok){ SCOPE = null; show("landing"); toast("Agent service not available — is it running?"); return; }
+  STATE = st;
+  if (st.pinConfigured){
+    showModal("pinModal", true);
+    setTimeout(()=>$("pinInput").focus(), 50);
+  } else {
+    const r = await apiPost("/api/login", {pin:""});
+    if (!r.ok){ show("landing"); toast("Login failed"); return; }
+    render(); show("app"); startLive();
+    $("btnLock").classList.remove("hidden");
+  }
+});
+const submitPin = withBusy(async () => {
+  $("pinErr").textContent = "";
+  const pin = $("pinInput").value;
+  const r = await apiPost("/api/login", {pin});
+  if (!r.ok){
+    $("pinErr").textContent = r.error && r.error.indexOf("Too many") === 0 ? r.error : "Incorrect PIN";
+    return;
+  }
+  showModal("pinModal", false);
+  $("pinInput").value = "";
+  render(); show("app"); startLive();
+  $("btnLock").classList.remove("hidden");
+});
+
+// ----------------------------------------------------------- shared control
+async function refresh(silent){
+  if (!SCOPE) return;
+  const url = SCOPE.kind==="local" ? "/api/state" : "/api/device/"+encodeURIComponent(SCOPE.deviceId)+"/state";
+  const r = await apiGet(url);
+  if (!r.ok){
+    if (!silent) toast("Refresh failed: "+(r.error||""));
+    return;
+  }
+  applyState(SCOPE.kind==="local" ? stripOk(r) : (r.state || stripOk(r)));
+}
+function stripOk(o){ const c = Object.assign({}, o); delete c.ok; return c; }
+
+const savePatch = withBusy(savePatchImpl);
+async function savePatchDirect(patch){ await savePatchImpl(patch); }
+async function savePatchImpl(patch){
+  const url = SCOPE.kind==="local" ? "/api/control" : "/api/device/"+encodeURIComponent(SCOPE.deviceId)+"/control";
+  const r = await apiPost(url, {patch});
+  if (r.ok){
+    noteWritten(r.revisionId);
+    if (SCOPE.kind==="local") await refresh(true);
+    // device scope: the SSE stream / pending banner takes it from here
+  }
+  else { toast("Error: "+(r.error||"failed")); if (!STATE) await refresh(true); }
+  maybeRender();
+}
+
+// ----------------------------------------------------------- modal helpers
+function openModal(opts){
+  return new Promise(resolve => {
+    modalResolve = resolve;
+    $("mTitle").textContent = opts.title || "";
+    $("mBody").textContent = opts.body || "";
+    $("mBody").classList.toggle("hidden", !opts.body);
+    $("mErr").textContent = "";
+    $("mInputWrap").classList.toggle("hidden", !opts.input);
+    if (opts.input){
+      $("mLabel").textContent = opts.label || "";
+      $("mInput").value = opts.initial || "";
+      $("mInput").setAttribute("inputmode", opts.numeric ? "numeric" : "text");
+    }
+    const okBtn = $("mOk");
+    okBtn.textContent = opts.okLabel || "OK";
+    okBtn.className = opts.danger ? "danger" : "primary";
+    showModal("modal", true);
+    if (opts.input) setTimeout(()=>$("mInput").focus(), 50);
+  });
+}
+function modalOk(){
+  if (!modalResolve) return;
+  const needsInput = !$("mInputWrap").classList.contains("hidden");
+  const value = needsInput ? $("mInput").value : true;
+  if (needsInput && modalValidate && !modalValidate(value)){ return; }
+  const r = modalResolve; modalResolve = null;
+  showModal("modal", false);
+  r(value);
+}
+function modalCancel(){
+  if (!modalResolve) return;
+  const r = modalResolve; modalResolve = null;
+  showModal("modal", false);
+  r(null);
+}
+let modalValidate = null;
+function askConfirm(title, body, okLabel, danger){
+  return openModal({title, body, okLabel, danger});
+}
+function askText(title, label, initial, validate, numeric){
+  modalValidate = validate || null;
+  return openModal({title, input:true, label, initial, validate, numeric});
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("modal").classList.contains("hidden")){
+    modalCancel();
+  }
+});
+
+// ----------------------------------------------------------- helpers
+function curApp(key){
+  return (STATE.apps||[]).find(x=>x.key===key) || null;
+}
+function curBlocked(key){
+  const a = curApp(key);
+  return a ? !!a.blocked : false;
+}
+function curLimit(key){
+  const a = curApp(key);
+  return a && a.dailyLimitMinutes ? a.dailyLimitMinutes : "";
+}
+function usageFor(key){
+  return (STATE.usage||[]).find(u=>u.key===key) || null;
+}
+// Package names are ALWAYS resolved by key here, never passed through HTML
+// onclick attributes — Windows paths contain backslashes that JS string
+// literals would silently strip (c:\a\b -> c:ab), corrupting the patch.
+function pkgOf(key){
+  const a = curApp(key);
+  return a && a.packageName ? a.packageName : key;
+}
+function b64urlEncode(s){
+  return btoa(unescape(encodeURIComponent(s))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+// Decodes a base64url key (domainsToday keys are b64url: RTDB keys cannot contain '.');
+// returns the raw input when it does not decode to readable text.
+function b64urlDecode(s){
+  try{
+    const b = atob(s.replace(/-/g,"+").replace(/_/g,"/") + "===".slice((s.length+3)%4));
+    const out = decodeURIComponent(escape(b));
+    // eslint-disable-next-line no-control-regex
+    return /[\u0000-\u001f]/.test(out) ? s : out;
+  }catch(e){ return s; }
+}
+function fmtMs(ms){
+  if (!ms || ms < 1000) return "0s";
+  const total = Math.floor(ms/1000);
+  const h = Math.floor(total/3600), m = Math.floor((total%3600)/60), s = total%60;
+  const parts = [];
+  if (h) parts.push(h+"h");
+  if (m) parts.push(m+"m");
+  if (s) parts.push(s+"s");
+  return parts.join(" ") || "0s";
+}
+function serverNow(){ return (STATE && STATE.serverNow) ? STATE.serverNow : Date.now(); }
+function fmtAge(ts){
+  if (!ts) return "";
+  const d = Math.max(0, serverNow() - ts);
+  if (d < 60000) return "just now";
+  const m = Math.floor(d/60000);
+  if (m < 60) return m + " min ago";
+  return Math.floor(m/60) + "h " + (m%60) + "m ago";
+}
+function fmtRemaining(until){
+  const d = until - serverNow();
+  if (d <= 0) return "expiring…";
+  return fmtMs(d) + " left";
+}
+function escapeHtml(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+// JS-escapes a value for embedding inside a single-quoted JS string that itself
+// sits in a double-quoted HTML attribute: backslash and quotes first, then HTML
+// entities. Backslashes MUST be escaped or JS strips them (c:\a\b -> c:ab).
+function escapeAttr(s){
+  let v = String(s==null?"":s);
+  v = v.replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,'\\"');
+  v = v.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return v;
+}
+
+// ----------------------------------------------------------- render
+function render(){
+  if (!STATE || !SCOPE) return;
+  const app = $("app");
+  const s = STATE;
+  const usageMap = {};
+  (s.usage||[]).forEach(u=>{ usageMap[u.key] = u; });
+  const gate = pendingStatus() === "waiting";
+  const dis = gate ? " disabled" : "";
+  const isDevice = SCOPE.kind === "device";
+  const modes = (s.modes||[]);
+  const anyEditorOpen = modes.some(m => (window.__modeOpen || "") === m.modeId);
+
+  let html = "";
+  lastRenderKey = stateKey();
+
+  // Waiting-for-device banner (phone-style sync gating)
+  if (pendingRevision === "__timeout__"){
+    html += '<div class="banner delayed">'+icon("warning",18)+'<span>Device connection delayed — your change was sent but the device has not confirmed it yet. It will apply when the device is back online.</span></div>';
+  } else if (gate){
+    html += '<div class="banner"><span class="spin">'+icon("sync",18)+'</span><span>Waiting for the device to confirm your change…</span></div>';
+  }
+
+  html += '<div class="console-grid">';
+
+  // ---- Left rail: device status + pending requests
+  html += '<section class="cg-rail">';
+
+  // Device status card (both scopes)
+  const health = s.protectionHealthy === true ? "Healthy" : (s.protectionHealthy === false ? "Needs setup" : "—");
+  const healthPill = s.protectionHealthy === true ? '<span class="pill on"><span class="dot"></span>Healthy</span>'
+    : (s.protectionHealthy === false ? '<span class="pill warn"><span class="dot"></span>Needs setup</span>' : '—');
+  let statusRows =
+    '<div class="status-row"><span class="label">Connection</span><span class="value">'
+    + '<span class="pill '+(s.online?"on":"off")+'"><span class="dot"></span>'+(s.online?"online":"offline")+'</span></span></div>'
+    + '<div class="status-row"><span class="label">Enforcement</span><span class="value mono">'+escapeHtml(s.enforcementMode||"—")+'</span></div>'
+    + '<div class="status-row"><span class="label">Protection</span><span class="value">'+healthPill+'</span></div>'
+    + '<div class="status-row"><span class="label">Last seen</span><span class="value">'+(s.lastSeen ? new Date(s.lastSeen).toLocaleString() : "—")+'</span></div>';
+  if (isDevice && s.syncStatus){
+    const syncPill = s.syncStatus==="applied" ? '<span class="pill on"><span class="dot"></span>Synced</span>'
+      : (s.syncStatus==="failed" ? '<span class="pill bad"><span class="dot"></span>Failed</span>'
+      : '<span class="pill warn"><span class="dot"></span>Pending</span>');
+    statusRows += '<div class="status-row"><span class="label">Sync</span><span class="value">'+syncPill
+      + (s.syncAppliedAt ? ' <span class="muted small">'+new Date(s.syncAppliedAt).toLocaleTimeString()+'</span>' : '')+'</span></div>';
+  }
+  html += '<div class="card"><div class="card-head">'+icon("devices",18)+'<h2>Device status</h2></div><div class="card-body" style="padding:8px 20px">'+statusRows+'</div></div>';
+
+  // Browser now card (the agent adds s.browser when it can see the active browser;
+  // hidden entirely while the key is absent).
+  if (s.browser){
+    const b = s.browser;
+    const bTabs = (b.tabs||[]);
+    const bCount = (b.tabCount != null) ? b.tabCount : bTabs.length;
+    const bStale = b.updatedAt && s.serverNow - b.updatedAt > 300000;
+    const bDoms = Object.keys(b.domainsToday||{}).map(d=>({ d:b64urlDecode(d), ms:b.domainsToday[d]||0 })).sort((x,y)=>y.ms-x.ms).slice(0,8);
+    let bRows =
+      '<div class="status-row"><span class="label">Browser</span><span class="value">'+escapeHtml(b.label||"—")+'</span></div>'
+      + '<div class="status-row"><span class="label">On</span><span class="value">'+escapeHtml(b.activeTab||"—")+'</span></div>'
+      + (b.activeUrl ? '<div class="status-row"><span class="label">URL</span><span class="value mono">'+escapeHtml(b.activeUrl)+'</span></div>' : '')
+      + '<div class="status-row"><span class="label">Tabs open</span><span class="value">'+escapeHtml(bCount)+'</span></div>';
+    if (bDoms.length){
+      bRows += '<div class="status-row"><span class="label">Today by site</span></div>';
+      bDoms.forEach(x=>{
+        bRows += '<div class="status-row"><span class="label">'+escapeHtml(x.d)+'</span><span class="value"><span class="chip">'+escapeHtml(fmtMs(x.ms))+'</span></span></div>';
+      });
+    }
+    if (bTabs.length){
+      bRows += '<details class="tablist"><summary>'+escapeHtml(bCount)+' tabs open</summary>';
+      bTabs.forEach(t=>{
+        const active = (b.activeUrl && t.url === b.activeUrl) || (b.activeTab && t.title === b.activeTab);
+        bRows += '<div class="status-row"><span class="value">'+escapeHtml(t.title||"(untitled)")
+          + (t.url ? ' <span class="mono muted small">'+escapeHtml(t.url)+'</span>' : '')+'</span>'
+          + (active ? '<span class="pill on"><span class="dot"></span>active</span>' : '')+'</div>';
+      });
+      bRows += '</details>';
+    }
+    html += '<div class="card"><div class="card-head">'+icon("globe",18)+'<h2>Browser now</h2><span class="count">'+escapeHtml(bCount)+'</span>'
+      + '<span class="pill '+(bStale?"warn":"on")+'"><span class="dot"></span>'+(bStale?"stale":"live")+'</span></div>'
+      + '<div class="card-body'+(bStale?" muted":"")+'" style="padding:8px 20px">'+bRows+'</div></div>';
+  }
+
+  // Pending unlock requests (device scope; arrives live via SSE)
+  const pend = (s.pendingUnlocks||[]);
+  if (pend.length){
+    html += '<div class="card"><div class="card-head">'+icon("unlock",18)+'<h2>Pending requests</h2><span class="count">'+pend.length+'</span></div><div class="card-body">';
+    pend.forEach(r=>{
+      const critical = r.expiresAt && (r.expiresAt - serverNow()) < 120000;
+      const initial = String(r.label||r.packageName||"?").charAt(0).toUpperCase();
+      html += '<div class="reqrow'+(critical?" critical":"")+'">'
+        + '<div class="req-top"><span class="app-tile">'+escapeHtml(initial)+'</span>'
+        + '<div><div class="req-title">'+escapeHtml(r.label||r.packageName||r.requestId)+'</div>'
+        + '<div class="muted small">'+escapeHtml(r.reason||"")+' · requested '+escapeHtml(fmtAge(r.createdAt))
+        + (r.expiresAt ? ' · expires in '+escapeHtml(fmtMs(Math.max(0, r.expiresAt - serverNow()))) : '')+'</div></div></div>'
+        + '<div class="req-actions">'
+        + '<button class="mini"'+dis+' onclick="respondUnlock(\''+escapeAttr(r.requestId)+'\',\'approveOneVisit\')">One visit</button>'
+        + '<button class="mini"'+dis+' onclick="respondUnlock(\''+escapeAttr(r.requestId)+'\',\'approve15\')">15 min</button>'
+        + '<button class="mini"'+dis+' onclick="respondUnlock(\''+escapeAttr(r.requestId)+'\',\'approve30\')">30 min</button>'
+        + '<button class="ghost danger mini"'+dis+' onclick="respondUnlock(\''+escapeAttr(r.requestId)+'\',\'deny\')">Deny</button>'
+        + '</div></div>';
+    });
+    html += '</div></div>';
+  }
+  html += '</section>';
+
+  // ---- Apps card
+  html += '<section class="cg-apps"><div class="card table-card">';
+  html += '<div class="card-head">'+icon("apps",18)+'<h2>Apps</h2><span class="count">'+(s.apps||[]).length+'</span><span class="spacer"></span>'
+    + (isDevice ? '<button class="mini"'+dis+' onclick="sendCommandResetAll()">'+icon("sync",14)+' Rescan apps</button>' : '')
+    + '</div>';
+  html += '<div class="card-tools"><div class="search-wrap">'+icon("search",16)
+    + '<input id="appSearch" placeholder="Search apps…" oninput="appFilter()" aria-label="Search apps" /></div></div>';
+  html += '<div class="table-wrap"><table id="appTable"><thead><tr><th>App</th><th>Status</th><th>Daily limit (min)</th><th>Today</th><th class="right">Actions</th></tr></thead><tbody>';
+  const apps = (s.apps||[]);
+  if (!apps.length) html += '<tr><td colspan="5" class="muted">No apps configured.</td></tr>';
+  apps.forEach(a=>{
+    const u = usageMap[a.key];
+    const mins = u ? u.minutes : 0;
+    const limitHit = !!(u && u.lockBlocked);
+    // Phone parity: when the TV has reported runtime state for this app, show what it
+    // is ACTUALLY enforcing (lockBlocked); only fall back to the desired rule when the
+    // TV hasn't reported state yet. The switch below still edits the desired rule.
+    const effectiveLocked = u !== undefined ? !!u.lockBlocked : !!a.blocked;
+    const isProtected = !!a.protectedReason && !effectiveLocked;
+    const status = effectiveLocked
+      ? '<span class="pill bad"><span class="dot"></span>'+(a.blocked?"Locked by parent":"Locked")+'</span>'
+      : (isProtected ? '<span class="pill" title="'+escapeAttr(a.protectedReason)+'">Protected</span>'
+      : '<span class="pill on"><span class="dot"></span>Allowed</span>');
+    const initial = String(a.label||a.packageName||a.key).charAt(0).toUpperCase();
+    html += '<tr'+((effectiveLocked||limitHit)?' class="rowbad"':'')+'>'
+      + '<td><div class="app-cell"><span class="app-tile">'+escapeHtml(initial)+'</span><span>'+escapeHtml(a.label||a.packageName||a.key)+'</span></div></td>'
+      + '<td>'+status+'</td>'
+      + '<td><span class="cell-row"><input id="lim_'+a.key+'" type="number" min="1" max="1440" value="'+curLimit(a.key)+'" style="width:64px" aria-label="Daily limit minutes" /> '
+      +   '<button class="mini"'+dis+' onclick="saveLimit(\''+a.key+'\')">Set</button></span></td>'
+      + '<td>'+(mins? '<span class="chip'+(limitHit?" bad":"")+'">'+escapeHtml(fmtMs((u.ms||mins*60000)))+'</span>' : '—')+'</td>'
+      + '<td class="right"><div class="row">'
+      // Phone parity: the per-app Allow/Lock control is a SWITCH (checked = allowed),
+      // writing the same manualBlocked policy the phone's switch writes.
+      +   '<label class="switch" title="'+(isProtected?escapeAttr(a.protectedReason||"Protected"):(a.blocked?"Allow this app":"Lock this app"))+'">'
+      +     '<input type="checkbox" '+(a.blocked?"":"checked")+dis+(isProtected?" disabled":"")+' onchange="toggleBlock(\''+a.key+'\')" aria-label="Allow app" />'
+      +     '<span class="track"><span class="knob"></span></span></label>'
+      // Temporary one-visit/timed unlock exists only in the local PIN console; remote
+      // unlocks are approvals of the child's request (Pending requests card), like the phone.
+      +   (!isDevice
+            ? '<select id="ut_'+a.key+'" aria-label="Unlock type"><option value="oneVisit">One visit</option><option value="timed">Timed</option></select>'
+              + '<button class="mini"'+dis+' onclick="unlockApp(\''+a.key+'\')">Unlock</button>'
+            : '')
+      +   (isDevice ? '<button class="mini ghost"'+dis+' onclick="sendCommandResetToday(\''+a.key+'\')">Reset</button>' : '')
+      + '</div></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  // add app: the table lists every inventoried app, so adding is only needed for a
+  // package the device's inventory does not know (remote devices).
+  if (isDevice){
+    html += '<div class="card-body" style="padding-top:14px">'
+      + '<div class="row"><input id="addName" placeholder="package name (e.g. com.example.app)" style="width:280px" />'
+      + '<button'+dis+' onclick="addAppByName()">Add app</button></div>'
+      + '<p class="muted small" style="margin:10px 0 0">Unlocking works like the phone: when the child taps "Ask parent" on a locked app, the request appears in <b>Pending requests</b> for you to approve (one visit / 15 / 30 min) or deny.</p>'
+      + '</div>';
+  }
+  html += '</div></section>';
+
+  // ---- Modes card
+  html += '<section class="cg-modes'+(anyEditorOpen?" span-full":"")+'"><div class="card">';
+  html += '<div class="card-head">'+icon("tune",18)+'<h2>Modes</h2><span class="count">'+modes.length+'</span></div>';
+  html += '<div class="card-body">';
+  html += '<p class="muted small" style="margin-top:0">When a mode is active, listed apps use the mode rules and unlisted apps are allowed.</p>';
+  const activeId = s.activeModeId || null;
+  if (!modes.length) html += '<p class="muted small">No modes yet.</p>';
+  html += '<div class="modes-list">';
+  modes.forEach(m=>{
+    const appsInMode = (m.apps||[]);
+    const lockedN = appsInMode.filter(x=>x.blocked).length;
+    const limitN = appsInMode.filter(x=>x.dailyLimitMinutes).length;
+    const isActive = m.modeId===activeId;
+    const open = (window.__modeOpen || "") === m.modeId;
+    html += '<div class="modebox'+(isActive?" active":"")+'">'
+      + '<div class="modehead">'
+      + '<b>'+escapeHtml(m.name)+'</b>'
+      + (isActive ? '<span class="pill on"><span class="dot"></span>Active</span>' : '')
+      + '<span class="muted small">'+lockedN+' locked · '+limitN+' limits</span>'
+      + '<span class="spacer"></span>'
+      + (isActive
+          ? '<button class="mini"'+dis+' onclick="deactivateMode()">Deactivate</button>'
+          : '<button class="mini primary"'+dis+' onclick="activateMode(\''+m.modeId+'\')">Activate</button>')
+      + '<button class="mini ghost" onclick="toggleModeEditor(\''+escapeAttr(m.modeId)+'\')">'+(open?"Close":"Edit rules")+'</button>'
+      + '<button class="mini ghost"'+dis+' onclick="renameMode(\''+m.modeId+'\')">Rename</button>'
+      + '<button class="mini ghost danger"'+dis+' onclick="deleteMode(\''+m.modeId+'\')">Delete</button>'
+      + '</div>'
+      + (open ? renderModeEditor(m, appsInMode, dis) : '')
+      + '</div>';
+  });
+  html += '</div>';
+  html += '<button'+dis+' onclick="createMode()">'+icon("plus",14)+' New mode</button>';
+  html += '</div></div></section>';
+
+  // ---- Device rules card (grouped, like the Stitch "Device Rules" card)
+  html += '<section class="cg-rules"><div class="card">';
+  html += '<div class="card-head">'+icon("tune",18)+'<h2>Device rules</h2></div>';
+  html += '<div class="rules-grid">';
+
+  // Safe mode
+  const sm = s.safeMode || {enabled:false};
+  html += '<div class="rule-sec"><h3 class="sec-title">'+icon("pause",15)+'Safe Mode (pause)</h3>';
+  if (sm.enabled){
+    html += '<p class="ok small" style="margin:0 0 10px">All app locks are paused until <b>'+new Date(sm.until).toLocaleTimeString()+'</b> ('+escapeHtml(fmtRemaining(sm.until))+').</p>'
+      + '<button class="danger"'+dis+' onclick="setSafe(false)">Resume now</button>';
+  } else {
+    html += '<div class="row"><select id="safeDur" aria-label="Pause duration">'
+      + '<option value="900000">15 minutes</option>'
+      + '<option value="1800000">30 minutes</option>'
+      + '<option value="3600000">1 hour</option>'
+      + '<option value="7200000">2 hours</option>'
+      + '</select>'
+      + '<input id="safeCustom" type="number" min="1" max="1440" placeholder="or custom min" style="width:110px" aria-label="Custom minutes" />'
+      + '<button class="primary"'+dis+' onclick="pauseSafe()">Pause</button></div>';
+  }
+  html += '</div>';
+
+  // Daily limit (budget)
+  html += '<div class="rule-sec"><h3 class="sec-title">'+icon("clock",15)+'Daily limit (this device)</h3>'
+    + '<div class="row"><input id="budget" type="number" min="1" max="1440" value="'+(s.budgetMinutes||"")+'" style="width:100px" aria-label="Device daily limit minutes" />'
+    + '<button'+dis+' onclick="saveBudget()">Save</button>'
+    + (s.budgetMinutes? ' <span class="muted small">current: '+s.budgetMinutes+' min/day</span>':'')
+    + '</div></div>';
+
+  // Allowlist (switch)
+  html += '<div class="rule-sec"><h3 class="sec-title">'+icon("check",15)+'Allowlist mode</h3>'
+    + '<label class="switch"><input type="checkbox" '+(s.allowlistEnabled?"checked":"")+' onchange="toggleAllowlist()" aria-label="Allowlist mode" />'
+    + '<span class="track"><span class="knob"></span></span>'
+    + '<span class="small">'+(s.allowlistEnabled?'<b class="err">On</b> — only apps with an explicit rule are permitted':'Off — only allowed apps are permitted when on')+'</span></label>'
+    + '</div>';
+
+  // Schedule (allowed hours)
+  const sch = s.schedule || {};
+  html += '<div class="rule-sec"><h3 class="sec-title">'+icon("clock",15)+'Allowed hours (schedule)</h3>'
+    + '<div class="row">'
+    + '<label class="switch"><input id="schEnabled" type="checkbox" '+(sch.enabled?'checked':'')+' />'
+    + '<span class="track"><span class="knob"></span></span><span class="small">Enabled</span></label>'
+    + '<input id="schStart" type="number" min="0" max="1439" value="'+(sch.startMinute!=null?sch.startMinute:'')+'" style="width:76px" title="start minute (0-1439)" aria-label="Start minute" /> – '
+    + '<input id="schEnd" type="number" min="0" max="1439" value="'+(sch.endMinute!=null?sch.endMinute:'')+'" style="width:76px" title="end minute (0-1439)" aria-label="End minute" />'
+    + '<button'+dis+' onclick="saveSchedule()">Save</button>'
+    + (sch.enabled?' <button class="ghost"'+dis+' onclick="disableSchedule()">Disable</button>':'')
+    + '</div>'
+    + '<p class="muted small" style="margin:8px 0 0">Minutes from local midnight; an end before start wraps past midnight.</p></div>';
+
+  // Content filter
+  const cf = s.contentFilter || {};
+  html += '<div class="rule-sec"><h3 class="sec-title">'+icon("globe",15)+'Content filter (websites)</h3>'
+    + '<div class="row" style="gap:16px">'
+    + '<label class="small"><input id="cf_social" type="checkbox" '+(cf.social?'checked':'')+' onchange="toggleContentFilter(\'social\')" /> Social</label>'
+    + '<label class="small"><input id="cf_gambling" type="checkbox" '+(cf.gambling?'checked':'')+' onchange="toggleContentFilter(\'gambling\')" /> Gambling</label>'
+    + '<label class="small"><input id="cf_adult" type="checkbox" '+(cf.adult?'checked':'')+' onchange="toggleContentFilter(\'adult\')" /> Adult</label>'
+    + '<label class="small"><input id="cf_gaming" type="checkbox" '+(cf.gaming?'checked':'')+' onchange="toggleContentFilter(\'gaming\')" /> Gaming</label>'
+    + '</div>'
+    + '<p class="muted small" style="margin:8px 0 0">Blocks the chosen categories via the hosts file.</p></div>';
+
+  // Device PIN (device scope only — the local laptop's PIN is managed on-device)
+  if (isDevice){
+    html += '<div class="rule-sec"><h3 class="sec-title">'+icon("shield",15)+'Device PIN</h3>'
+      + '<div class="row"><input id="devPin" type="password" maxlength="6" placeholder="new 6-digit PIN" style="width:150px;font-family:var(--mono);letter-spacing:.2em" aria-label="New PIN" />'
+      + '<button class="primary"'+dis+' onclick="savePin()">'+(s.pinConfigured?'Change PIN':'Set PIN')+'</button></div>'
+      + '<p class="muted small" style="margin:8px 0 0">Sets the PIN this device uses for quick control unlocks.</p></div>';
+  }
+
+  // Blocked websites (full width)
+  html += '<div class="rule-sec span2"><h3 class="sec-title">'+icon("globe",15)+'Blocked websites</h3>';
+  const domains = (s.customDomains||[]);
+  if (domains.length){
+    html += '<div class="row" style="margin-bottom:12px">';
+    domains.forEach(d=>{ html += '<span class="chip">'+escapeHtml(d)+' <a class="link" onclick="removeDomain(\''+escapeAttr(d)+'\')" aria-label="Remove '+escapeAttr(d)+'">✕</a></span> '; });
+    html += '</div>';
+  } else html += '<p class="muted small" style="margin:0 0 12px">None.</p>';
+  html += '<div class="row"><input id="newDomain" placeholder="example.com or youtube.com/shorts" style="width:300px" aria-label="Domain to block" />'
+    + '<button'+dis+' onclick="addDomain()">Add</button></div>'
+    + '<p class="muted small" style="margin:8px 0 0">Paths are supported, e.g. youtube.com/shorts.</p></div>';
+
+  html += '</div></div></section>';
+
+  // ---- Protection events
+  const evts = (s.tamperEvents||[]);
+  if (evts.length){
+    html += '<section class="cg-events"><div class="card">';
+    html += '<div class="card-head">'+icon("warning",18)+'<h2>Protection events</h2><span class="count">'+evts.length+'</span></div><div class="card-body">';
+    evts.forEach(e=>{
+      const type = String(e.type||"event").toLowerCase();
+      const critical = type.indexOf("disabled") >= 0 || type.indexOf("risky") >= 0 || type.indexOf("missing") >= 0;
+      html += '<div class="reqrow'+(critical?" critical":"")+'">'
+        + '<span class="pill'+(critical?" bad":"")+'">'+escapeHtml(e.type||"event")+'</span> '
+        + '<span class="muted small">'+(e.createdAt?new Date(e.createdAt).toLocaleString():'')+'</span><br />'
+        + escapeHtml(e.message||"")+'</div>';
+    });
+    html += '</div></div></section>';
+  }
+
+  html += '</div>';
+  app.innerHTML = html;
+}
+
+// ----------------------------------------------------------- mode editor
+function renderModeEditor(m, appsInMode, dis){
+  const usageMap = {};
+  (STATE.usage||[]).forEach(u=>{ usageMap[u.key] = u; });
+  let html = '<div class="modebody"><div class="table-wrap"><table><thead><tr><th>App</th><th>Mode status</th><th>Mode limit (min)</th><th>Used today</th><th></th></tr></thead><tbody>';
+  if (!appsInMode.length) html += '<tr><td colspan="5" class="muted">No app rules in this mode — unlisted apps are allowed while it is active.</td></tr>';
+  appsInMode.forEach(a=>{
+    const u = usageMap[a.key];
+    const used = u ? fmtMs(u.ms || u.minutes*60000) : "0s";
+    const over = u && u.lockBlocked;
+    html += '<tr>'
+      + '<td><div class="app-cell"><span class="app-tile">'+escapeHtml(String(a.label||a.packageName||a.key).charAt(0).toUpperCase())+'</span><span>'+escapeHtml(a.label||a.packageName||a.key)+'</span></div></td>'
+      + '<td><span class="pill '+(a.blocked?"bad":"on")+'"><span class="dot"></span>'+(a.blocked?"Locked":"Allowed")+'</span></td>'
+      + '<td><span class="cell-row"><input id="mlim_'+a.key+'" type="number" min="1" max="1440" value="'+(a.dailyLimitMinutes||"")+'" style="width:80px" aria-label="Mode daily limit" /> '
+      +   '<button class="mini"'+dis+' onclick="saveModeLimit(\''+escapeAttr(m.modeId)+'\',\''+a.key+'\')">Set</button>'
+      +   (a.dailyLimitMinutes? ' <button class="mini ghost"'+dis+' onclick="clearModeLimit(\''+escapeAttr(m.modeId)+'\',\''+a.key+'\')">Clear</button>':'')+'</span></td>'
+      + '<td><span class="chip'+(over?" bad":"")+'">'+escapeHtml(used)+'</span> <span class="muted small">(app total)</span></td>'
+      + '<td class="right"><div class="row">'
+      +   '<label class="switch"><input type="checkbox" '+(a.blocked?"":"checked")+dis+' onchange="toggleModeBlock(\''+escapeAttr(m.modeId)+'\',\''+a.key+'\')" aria-label="Allow app in mode" />'
+      +     '<span class="track"><span class="knob"></span></span></label> '
+      +   '<button class="mini ghost danger"'+dis+' onclick="removeModeApp(\''+escapeAttr(m.modeId)+'\',\''+a.key+'\')">Remove</button></div></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  const existing = new Set(appsInMode.map(x=>x.key));
+  const candidates = (STATE.apps||[]).filter(a=>!existing.has(a.key));
+  if (candidates.length){
+    html += '<div class="row" style="margin-top:10px"><select id="madd_'+escapeAttr(m.modeId)+'" aria-label="App to add to mode">';
+    candidates.forEach(a=>{ html += '<option value="'+escapeAttr(a.key)+'">'+escapeHtml(a.label||a.packageName)+'</option>'; });
+    html += '</select><button class="mini"'+dis+' onclick="addModeApp(\''+escapeAttr(m.modeId)+'\')">Add app to mode</button></div>';
+  }
+  html += '</div>';
+  return html;
+}
+function toggleModeEditor(modeId){
+  window.__modeOpen = window.__modeOpen === modeId ? "" : modeId;
+  render();
+}
+function setModeApp(modeId, key, blocked, limitOrNull){
+  const rule = appRuleFor(key, pkgOf(key), blocked, undefined);
+  if (limitOrNull === null) rule.dailyLimitMinutes = null; // JSON null deletes the key (server-side merge)
+  else if (limitOrNull != null) rule.dailyLimitMinutes = limitOrNull;
+  savePatch({modes:{ [modeId]: { modeId: modeId, apps:{ [key]: rule } } }});
+}
+function toggleModeBlock(modeId, key){
+  const m = (STATE.modes||[]).find(x=>x.modeId===modeId);
+  const row = m && (m.apps||[]).find(x=>x.key===key);
+  setModeApp(modeId, key, row ? !row.blocked : true, undefined);
+}
+function saveModeLimit(modeId, key){
+  const el = $("mlim_"+key);
+  if (!el) return;
+  const m = (STATE.modes||[]).find(x=>x.modeId===modeId);
+  const row = m && (m.apps||[]).find(x=>x.key===key);
+  const blocked = row ? !!row.blocked : false;
+  const v = el.value.trim();
+  if (v === ""){ toast("Enter a number of minutes (1-1440), or use Clear."); return; }
+  const n = parseInt(v,10);
+  if (Number.isNaN(n)){ toast("Enter a number of minutes (1-1440)."); return; }
+  setModeApp(modeId, key, blocked, Math.max(1, Math.min(1440, n)));
+}
+function clearModeLimit(modeId, key){
+  const m = (STATE.modes||[]).find(x=>x.modeId===modeId);
+  const row = m && (m.apps||[]).find(x=>x.key===key);
+  setModeApp(modeId, key, row ? !!row.blocked : false, null);
+}
+function addModeApp(modeId){
+  const sel = $("madd_"+modeId);
+  if (!sel || !sel.value) return;
+  setModeApp(modeId, sel.value, false, undefined);
+}
+function removeModeApp(modeId, key){
+  savePatch({modes:{ [modeId]: { modeId: modeId, apps:{ [key]: null } } }});
+}
+
+// ----------------------------------------------------------- actions
+// App-rule patches MUST carry packageKey (== the encoded key) — the Firebase rules
+// require hasChildren(['packageKey','packageName','manualBlocked']); omitting it makes
+// the whole control write fail with "Permission denied".
+function appRuleFor(key, pkg, blocked, limit){
+  const r = { packageKey: key, packageName: pkg, manualBlocked: blocked };
+  if (limit !== undefined && limit !== null) r.dailyLimitMinutes = limit;
+  return r;
+}
+function appRule(key, blocked, limit){ return appRuleFor(key, pkgOf(key), blocked, limit); }
+const toggleBlock = withBusy(async (key) => {
+  const blocked = !curBlocked(key);
+  await savePatchDirect({apps:{ [key]: appRule(key, blocked) }});
+});
+function saveLimit(key){
+  const v = $("lim_"+key).value.trim();
+  if (v!==""){
+    const n = parseInt(v,10);
+    if (Number.isNaN(n)){ toast("Enter a number of minutes (1-1440)."); return; }
+  }
+  const lim = v==="" ? null : Math.max(1, Math.min(1440, parseInt(v,10)));
+  savePatch({apps:{ [key]: appRule(key, curBlocked(key), lim) }});
+}
+const unlockApp = withBusy(async (key) => {
+  const type = $("ut_"+key).value;
+  let durationMs = null;
+  if (type==="timed"){
+    const isDevice = SCOPE.kind === "device";
+    const m = await askText("Timed unlock", "Unlock for how many minutes?" + (isDevice ? " (remote approvals support 15 or 30.)" : ""), "15",
+      v => { const n = parseInt(v,10); if (Number.isNaN(n) || n < 1 || n > 1440){ $("mErr").textContent = "Enter 1-1440 minutes."; return false; } return true; },
+      true);
+    if (m == null) return;
+    let minutes = Math.max(1, parseInt(m,10)||15);
+    if (isDevice){
+      // Remote timed approvals only accept 15 or 30 minutes (rule-enforced).
+      minutes = minutes <= 22 ? 15 : 30;
+      durationMs = minutes * 60000;
+    } else {
+      durationMs = minutes * 60000;
+    }
+    // Send the RAW package name: the local grant is keyed by package name, and the
+    // remote approval matches pending requests by package name too.
+    const url = SCOPE.kind==="local" ? "/api/unlock" : "/api/device/"+encodeURIComponent(SCOPE.deviceId)+"/unlock";
+    const r = await apiPost(url, {appKey: pkgOf(key), type, durationMs});
+    if (r.ok){
+      toast(SCOPE.kind==="device" && type==="timed" ? ("Unlock approved for "+minutes+" minutes") : "Unlock sent");
+    } else {
+      toast("Unlock failed: "+(r.error||""));
+    }
+    return;
+  }
+  const url = SCOPE.kind==="local" ? "/api/unlock" : "/api/device/"+encodeURIComponent(SCOPE.deviceId)+"/unlock";
+  const r = await apiPost(url, {appKey: pkgOf(key), type});
+  toast(r.ok ? "Unlock sent" : ("Unlock failed: "+(r.error||"")));
+});
+const addAppByName = withBusy(async () => {
+  const name = $("addName").value.trim();
+  if (!name) return;
+  const key = b64urlEncode(name);
+  await savePatchDirect({apps:{ [key]: appRuleFor(key, name, false) }});
+});
+const activateMode = withBusy(async (id) => {
+  const m = (STATE.modes||[]).find(x=>x.modeId===id);
+  const yes = await askConfirm("Activate mode?", (m ? '"'+m.name+'"' : "This mode") + " will override the app rules: apps listed in the mode follow the mode rules, unlisted apps are allowed.", "Activate");
+  if (!yes) return;
+  await savePatchDirect({activeMode:{ modeId:id, modeName: m ? m.name : null }});
+});
+const deactivateMode = withBusy(async () => {
+  const yes = await askConfirm("Deactivate mode?", "The device goes back to its normal (top-level) app rules.", "Deactivate");
+  if (!yes) return;
+  await savePatchDirect({activeMode:null});
+});
+const renameMode = withBusy(async (id) => {
+  const m = (STATE.modes||[]).find(x=>x.modeId===id);
+  const name = await askText("Rename mode", "Mode name", m ? m.name : "", v => { if (!v.trim()){ $("mErr").textContent = "Name required."; return false; } return true; });
+  if (!name) return;
+  // Merge keeps the mode's app rules; only name/modeId change.
+  await savePatchDirect({modes:{ [id]: { modeId:id, name: name.trim() } }});
+});
+const deleteMode = withBusy(async (id) => {
+  const m = (STATE.modes||[]).find(x=>x.modeId===id);
+  const isActive = m && STATE.activeModeId === id;
+  const yes = await askConfirm("Delete mode"+(m ? ' "'+m.name+'"' : "")+"?", "This removes the mode and all of its app rules."
+      + (isActive ? " It is currently ACTIVE — the device returns to the top-level rules." : ""), "Delete", true);
+  if (!yes) return;
+  // Phone parity: deleting the active mode clears activeMode in the same write.
+  if (isActive) await savePatchDirect({modes:{ [id]: null }, activeMode: null});
+  else await savePatchDirect({modes:{ [id]: null }});
+});
+const createMode = withBusy(async () => {
+  const name = await askText("New mode", "Mode name", "", v => { if (!v.trim()){ $("mErr").textContent = "Name required."; return false; } return true; });
+  if (!name) return;
+  const id = "m_"+Date.now().toString(36);
+  await savePatchDirect({modes:{ [id]: { modeId:id, name: name.trim(), apps:{} } }});
+});
+const setSafe = withBusy(async (on) => {
+  if (on){ pauseSafe(); return; }
+  await savePatchDirect({safeMode:{ enabled:false, until:0 }});
+});
+const pauseSafe = withBusy(async () => {
+  let custom = $("safeCustom") ? parseInt($("safeCustom").value,10) : 0;
+  if (!Number.isNaN(custom) && custom > 0){
+    custom = Math.max(1, Math.min(1440, custom)); // rules clamp pauses to one day
+  } else {
+    custom = 0;
+  }
+  const dur = (custom>0 ? custom*60000 : (parseInt($("safeDur").value,10)||3600000));
+  const yes = await askConfirm("Pause the device?", "All app locks will be paused for " + fmtMs(dur) + ".", "Pause");
+  if (!yes) return;
+  // Deadline from the AGENT's server-time estimate, never the browser clock —
+  // the device enforces against server time.
+  const until = serverNow() + dur;
+  await savePatchDirect({safeMode:{ enabled:true, until:until }});
+});
+const saveBudget = withBusy(async () => {
+  const v = $("budget").value.trim();
+  if (v!==""){
+    const n = parseInt(v,10);
+    if (Number.isNaN(n)){ toast("Enter a number of minutes (1-1440)."); return; }
+  }
+  const lim = v==="" ? null : Math.max(1, Math.min(1440, parseInt(v,10)));
+  await savePatchDirect({budget: lim==null ? null : {dailyLimitMinutes:lim}});
+});
+const toggleAllowlist = withBusy(async () => {
+  const on = !STATE.allowlistEnabled;
+  const yes = await askConfirm((on?"Enable":"Disable")+" allowlist mode?", on
+    ? "Every app without an explicit rule will be BLOCKED until you allow it."
+    : "Apps without rules return to their normal (unblocked) state.", on?"Enable":"Disable", on);
+  if (!yes) return;
+  await savePatchDirect({allowlist:{ enabled:on }});
+});
+const saveSchedule = withBusy(async () => {
+  const enabled = $("schEnabled").checked;
+  if (!enabled){ await savePatchDirect({schedule:null}); return; }
+  const start = Math.max(0, Math.min(1439, parseInt($("schStart").value||"0",10)||0));
+  const end = Math.max(0, Math.min(1439, parseInt($("schEnd").value||"0",10)||0));
+  await savePatchDirect({schedule:{enabled:true, startMinute:start, endMinute:end}});
+});
+const disableSchedule = withBusy(async () => { await savePatchDirect({schedule:null}); });
+const toggleContentFilter = withBusy(async (cat) => {
+  const cf = Object.assign({social:false,gambling:false,adult:false,gaming:false}, STATE.contentFilter||{});
+  cf[cat] = !cf[cat];
+  await savePatchDirect({contentFilter: cf});
+});
+const savePin = withBusy(async () => {
+  const pin = ($("devPin").value||"").trim();
+  if (!/^\d{6}$/.test(pin)){ toast("PIN must be exactly 6 digits."); return; }
+  const yes = await askConfirm(STATE.pinConfigured ? "Change PIN?" : "Set PIN?", "The new 6-digit PIN is used on this device for quick unlocks.", STATE.pinConfigured ? "Change" : "Set");
+  if (!yes) return;
+  devicePost("pin", {pin: pin}, "PIN");
+});
+function appFilter(){
+  const q = ($("appSearch").value||"").toLowerCase();
+  document.querySelectorAll("#appTable tbody tr").forEach(tr=>{
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
+}
+const addDomain = withBusy(async () => {
+  const v = $("newDomain").value.trim();
+  if (!v) return;
+  // Re-read state first when it might be stale: the whole array is replaced by
+  // the write, and two consoles could otherwise drop each other's domains.
+  await refreshIfStale();
+  const cur = (STATE.customDomains||[]).slice();
+  if (!cur.includes(v)) cur.push(v);
+  await savePatchDirect({customBlockedDomains: cur});
+});
+const removeDomain = withBusy(async (d) => {
+  await refreshIfStale();
+  const cur = (STATE.customDomains||[]).filter(x=>x!==d);
+  await savePatchDirect({customBlockedDomains: cur});
+});
+async function refreshIfStale(){
+  if (!STATE || !STATE.serverNow || Math.abs(Date.now() - STATE.serverNow) > 15000){
+    await refresh(true);
+  }
+}
+
+// ----------------------------------------------------------- device actions (owner)
+async function devicePost(action, body, label){
+  const url = "/api/device/"+encodeURIComponent(SCOPE.deviceId)+"/"+action;
+  const r = await apiPost(url, body||{});
+  toast(r.ok ? ((label||action)+" sent") : ((label||action)+" failed: "+(r.error||"")));
+  if (r.ok) await refresh(true);
+}
+const sendCommandResetAll = withBusy(async () => {
+  await devicePost("command", {type:"rescanApps"}, "Rescan");
+});
+const sendCommandResetToday = withBusy(async (key) => {
+  // resetToday receives the app key; resolve the raw package name here so Windows
+  // backslash paths never travel through an HTML attribute.
+  const label = (curApp(key)||{}).label || "this app";
+  const yes = await askConfirm("Reset today?", "Clears today's usage for "+label+" so its daily limit restarts.", "Reset");
+  if (!yes) return;
+  await devicePost("command", {type:"resetToday", packageName: pkgOf(key)}, "Reset");
+});
+const respondUnlock = withBusy(async (requestId, action) => {
+  await devicePost("unlock-respond", {requestId: requestId, action: action}, "Unlock");
+});
+const removeDevice = withBusy(async (id) => {
+  const dev = DEVICES.find(d=>d.deviceId===id);
+  const yes = await askConfirm("Remove " + (dev && dev.label ? dev.label : "device") + "?",
+    "This sends an unpair command to the device; it will need to be paired again to come back.", "Remove", true);
+  if (!yes) return;
+  const r = await apiPost("/api/device/"+encodeURIComponent(id)+"/command", {type:"unpair"});
+  toast(r.ok ? "Unpair sent" : "Failed: "+(r.error||""));
+  if (r.ok){ DEVICES = DEVICES.filter(x=>x.deviceId!==id); showDeviceList(); }
+});
+
+// boot
+$("navDevIcon").innerHTML = icon("devices", 16);
+$("navLocalIcon").innerHTML = icon("laptop", 16);
+$("navOutIcon").innerHTML = icon("logout", 16);
+$("navLockIcon").innerHTML = icon("lock", 16);
+$("pinIconGlyph").innerHTML = icon("shield", 30);
+goHome();
+</script>
+</body>
+</html>

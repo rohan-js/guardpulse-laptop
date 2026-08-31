@@ -1,0 +1,13 @@
+# GuardPulse content blocklist: gaming
+steampowered.com
+store.steampowered.com
+epicgames.com
+www.epicgames.com
+roblox.com
+www.roblox.com
+minecraft.net
+www.minecraft.net
+blizzard.com
+www.blizzard.com
+battle.net
+www.battle.net

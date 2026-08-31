@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>GuardPulse.Agent.Service</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>GuardPulse.Agent.Service</AssemblyName>
+    <Product>Device Service</Product>
+    <Description>GuardPulse Laptop managed-device service</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GuardPulse.Agent.Core\GuardPulse.Agent.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.0" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <!-- Static hosts-file blocklists shipped next to the service exe. -->
+    <Content Include="..\..\content-blocklists\*.txt" CopyToOutputDirectory="PreserveNewest" Link="content-blocklists\%(Filename)%(Extension)" />
+  </ItemGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Assets\guardpulse-laptop.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\guardpulse-laptop.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,18 @@
+{
+  "name": "@guardpulse/e2e-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fake-parent E2E harness for the GuardPulse Laptop Windows agent. Pure REST (RTDB + Identity Toolkit), zero dependencies, Node 18+.",
+  "type": "commonjs",
+  "bin": {
+    "guardpulse-e2e": "./guardpulse-e2e.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "e2e": "node guardpulse-e2e.js",
+    "ensure-account": "node guardpulse-e2e.js ensure-account"
+  },
+  "license": "UNLICENSED"
+}

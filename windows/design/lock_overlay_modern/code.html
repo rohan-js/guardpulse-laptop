@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Screen Lock</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "inverse-primary": "#adc6ff",
+                "primary-fixed-dim": "#adc6ff",
+                "on-tertiary-container": "#fffbff",
+                "error-container": "#ffdad6",
+                "on-secondary-container": "#00732a",
+                "on-tertiary-fixed": "#410001",
+                "surface-container-highest": "#e4e2e4",
+                "secondary": "#006e28",
+                "on-error-container": "#93000a",
+                "on-secondary-fixed": "#002107",
+                "primary-container": "#0070eb",
+                "outline": "#717786",
+                "surface": "#fcf8fb",
+                "background": "#fcf8fb",
+                "surface-container-high": "#eae7ea",
+                "digital-blue-tint": "#E5F1FF",
+                "surface-container-low": "#f6f3f5",
+                "glass-border": "rgba(255, 255, 255, 0.15)",
+                "surface-background": "#F2F2F7",
+                "on-secondary": "#ffffff",
+                "inverse-surface": "#303032",
+                "inverse-on-surface": "#f3f0f2",
+                "on-primary-container": "#fefcff",
+                "surface-bright": "#fcf8fb",
+                "surface-tint": "#005bc1",
+                "on-primary-fixed": "#001a41",
+                "surface-container": "#f0edef",
+                "on-tertiary-fixed-variant": "#930005",
+                "on-primary": "#ffffff",
+                "on-error": "#ffffff",
+                "outline-variant": "#c1c6d7",
+                "secondary-container": "#6ffb85",
+                "on-primary-fixed-variant": "#004493",
+                "surface-dim": "#dcd9dc",
+                "on-secondary-fixed-variant": "#00531c",
+                "tertiary": "#bc000a",
+                "on-surface-variant": "#414755",
+                "surface-variant": "#e4e2e4",
+                "surface-container-lowest": "#ffffff",
+                "glass-surface": "rgba(255, 255, 255, 0.75)",
+                "primary-fixed": "#d8e2ff",
+                "error": "#ba1a1a",
+                "on-tertiary": "#ffffff",
+                "on-surface": "#1b1b1d",
+                "secondary-fixed": "#72fe88",
+                "on-background": "#1b1b1d",
+                "secondary-fixed-dim": "#53e16f",
+                "primary": "#0058bc",
+                "tertiary-container": "#e2241f",
+                "tertiary-fixed": "#ffdad5",
+                "tertiary-fixed-dim": "#ffb4aa"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "gutter-sm": "16px",
+                "stack-xl": "48px",
+                "stack-md": "20px",
+                "stack-xs": "4px",
+                "stack-sm": "12px",
+                "margin-page": "40px",
+                "stack-lg": "32px",
+                "gutter-lg": "24px",
+                "unit": "4px"
+        },
+        "fontFamily": {
+                "label-md": [
+                        "Hanken Grotesk"
+                ],
+                "body-md": [
+                        "Hanken Grotesk"
+                ],
+                "body-lg": [
+                        "Hanken Grotesk"
+                ],
+                "label-sm": [
+                        "Hanken Grotesk"
+                ],
+                "headline-md": [
+                        "Hanken Grotesk"
+                ],
+                "headline-lg": [
+                        "Hanken Grotesk"
+                ],
+                "headline-lg-mobile": [
+                        "Hanken Grotesk"
+                ],
+                "display-hero": [
+                        "Hanken Grotesk"
+                ]
+        },
+        "fontSize": {
+                "label-md": [
+                        "13px",
+                        {
+                                "lineHeight": "18px",
+                                "letterSpacing": "0.04em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "body-md": [
+                        "15px",
+                        {
+                                "lineHeight": "22px",
+                                "letterSpacing": "0.01em",
+                                "fontWeight": "400"
+                        }
+                ],
+                "body-lg": [
+                        "18px",
+                        {
+                                "lineHeight": "28px",
+                                "letterSpacing": "0em",
+                                "fontWeight": "400"
+                        }
+                ],
+                "label-sm": [
+                        "11px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.06em",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-md": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-lg": [
+                        "32px",
+                        {
+                                "lineHeight": "40px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "28px",
+                        {
+                                "lineHeight": "36px",
+                                "fontWeight": "600"
+                        }
+                ],
+                "display-hero": [
+                        "72px",
+                        {
+                                "lineHeight": "80px",
+                                "letterSpacing": "-0.03em",
+                                "fontWeight": "700"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+<style>
+        .mica-bg {
+            background-color: rgba(252, 248, 251, 0.75); /* surface with opacity */
+            backdrop-filter: blur(40px);
+            -webkit-backdrop-filter: blur(40px);
+        }
+        
+        .dark .mica-bg {
+             background-color: rgba(48, 48, 50, 0.85); /* inverse-surface base */
+        }
+        
+        .pin-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid #0058bc; /* primary */
+            background-color: transparent;
+            transition: all 0.2s ease;
+        }
+        
+        .pin-dot.filled {
+            background-color: #0058bc;
+        }
+        
+        .keypad-btn {
+            width: 72px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-family: 'Hanken Grotesk', sans-serif;
+            font-size: 28px;
+            font-weight: 500;
+            color: #1b1b1d; /* on-surface */
+            background: transparent;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            border: none;
+        }
+        
+        .keypad-btn:hover {
+            background-color: rgba(228, 226, 228, 0.5); /* surface-variant transparent */
+        }
+        
+        .dark .keypad-btn {
+            color: #f3f0f2; /* inverse-on-surface */
+        }
+        
+        .dark .keypad-btn:hover {
+            background-color: rgba(243, 240, 242, 0.1);
+        }
+
+        .shake {
+            animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-1px, 0, 0); }
+            20%, 80% { transform: translate3d(2px, 0, 0); }
+            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+            40%, 60% { transform: translate3d(4px, 0, 0); }
+        }
+      </style>
+</head>
+<body class="bg-surface-background dark:bg-on-background h-screen w-screen overflow-hidden font-body-md text-on-surface dark:text-inverse-on-surface antialiased">
+<!-- Fullscreen Overlay Background -->
+<div class="absolute inset-0 z-0 bg-cover bg-center" data-alt="A blurred, semi-transparent view of a modern web browser window showing a generic colorful website, acting as the locked application background behind a frosted glass layer. The style is clean, modern, and realistic, simulating a Windows 11 desktop environment. Light mode aesthetic with soft, bright colors bleeding through the blur." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuC6YflJlZQAry2G8Y46zs13pj4o8PGoVH7vF_hI2aKYLLtuJGOq796ah1gceHQ8zO5AWiFAF5gEA9U3ld57bsCITjs2CczC8TlA8wQCTcSRNaBjT_VToCmEvwC8TR38PJheVv0Hm8j5zvWkiuw2AEfSuPyaRq-KeCS01gZpTe9wtlW_TzD8KcFHQcore7hj45ymHD5jtRqVrMnbrEMEAVkdQcIlcPVdZsxTKgwdkol6lxTUh7wfzYmX')"></div>
+<!-- Mica Glass Layer -->
+<div class="absolute inset-0 z-10 mica-bg flex flex-col items-center justify-center p-6">
+<!-- Lock Container -->
+<div class="flex flex-col items-center max-w-md w-full animate-fade-in-up bg-glass-surface/50 dark:bg-inverse-surface/50 backdrop-blur-md border border-glass-border rounded-[32px] p-10 shadow-2xl">
+<!-- Lock Icon -->
+<div class="w-16 h-16 bg-primary rounded-full flex items-center justify-center mb-stack-lg shadow-sm">
+<span class="material-symbols-outlined text-[32px] text-on-primary" style="font-variation-settings: 'FILL' 1;">
+                    lock
+                </span>
+</div>
+<!-- Title -->
+<h1 class="font-headline-lg text-headline-lg mb-stack-xs text-center text-on-surface">
+                Access Locked
+            </h1>
+<!-- Blocked App Info -->
+<div class="flex items-center gap-2 bg-surface-container/50 rounded-full px-4 py-1.5 mb-stack-sm shadow-sm border border-outline-variant/30 backdrop-blur-sm">
+<img class="w-4 h-4 object-contain" data-alt="A simplified, modern icon representing a web browser, clean and colorful, fitting a modern desktop UI style. Solid bright colors, minimalist vector aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBrodKtbn85iwpoc9San5FYyomAiaKaLcXvu5WNhPAAK3wRar2B3UTnuKrIHJtxiBxctG3iUhcBKUtgUcP7PUqm-kVorrJpoPAOEAMdXGsYkhOAcELNprJRcNZnHPsTjZ4pOuESEihF2Yh-dIQWG_Pfitv5ddWEHsWA7VcBR-j5dVsdfL9FFin12-r8Wcv7tmTaE7JzrLDfLnSVrJd-zwC7H3ACdybOulnnWwrnPaJHLDEzG5kqdpRM"/>
+<span class="font-label-md text-label-md text-on-surface-variant">Brave Browser</span>
+</div>
+<!-- Reason -->
+<p class="font-body-md text-body-md text-on-surface-variant mb-stack-lg">
+                Locked by parent
+            </p>
+<!-- PIN Display -->
+<div class="flex gap-4 mb-stack-lg" id="pin-container">
+<div class="pin-dot"></div>
+<div class="pin-dot"></div>
+<div class="pin-dot"></div>
+<div class="pin-dot"></div>
+<div class="pin-dot"></div>
+<div class="pin-dot"></div>
+</div>
+<!-- Error Message (Hidden by default) -->
+<p class="font-body-md text-body-md text-error h-6 mb-stack-sm opacity-0 transition-opacity" id="error-message">
+                Wrong PIN. Try again.
+            </p>
+<!-- Keypad -->
+<div class="grid grid-cols-3 gap-x-6 gap-y-4 mb-stack-lg">
+<button class="keypad-btn" onclick="addPin()">1</button>
+<button class="keypad-btn" onclick="addPin()">2</button>
+<button class="keypad-btn" onclick="addPin()">3</button>
+<button class="keypad-btn" onclick="addPin()">4</button>
+<button class="keypad-btn" onclick="addPin()">5</button>
+<button class="keypad-btn" onclick="addPin()">6</button>
+<button class="keypad-btn" onclick="addPin()">7</button>
+<button class="keypad-btn" onclick="addPin()">8</button>
+<button class="keypad-btn" onclick="addPin()">9</button>
+<button class="keypad-btn text-on-surface-variant" onclick="clearPin()">
+<span class="material-symbols-outlined text-[28px]">close</span>
+</button>
+<button class="keypad-btn" onclick="addPin()">0</button>
+<button class="keypad-btn text-on-surface-variant" onclick="removePin()">
+<span class="material-symbols-outlined text-[28px]">backspace</span>
+</button>
+</div>
+<p class="font-label-sm text-label-sm text-outline mb-stack-lg text-center uppercase tracking-wider">
+                Physical keyboard entry also works
+            </p>
+<!-- Secondary Action -->
+<button class="px-6 py-2.5 border border-outline-variant rounded-full font-label-md text-label-md text-on-surface hover:bg-surface-variant/50 transition-colors duration-200">
+                Ask Parent to Unlock
+            </button>
+</div>
+</div>
+<script>
+        let currentPin = 0;
+        const maxPin = 6;
+        const dots = document.querySelectorAll('.pin-dot');
+        const container = document.getElementById('pin-container');
+        const errorMsg = document.getElementById('error-message');
+
+        function updateDots() {
+            dots.forEach((dot, index) => {
+                if (index < currentPin) {
+                    dot.classList.add('filled');
+                } else {
+                    dot.classList.remove('filled');
+                }
+            });
+            
+            errorMsg.style.opacity = '0';
+            container.classList.remove('shake');
+        }
+
+        function addPin() {
+            if (currentPin < maxPin) {
+                currentPin++;
+                updateDots();
+                
+                if (currentPin === maxPin) {
+                    // Simulate check
+                    setTimeout(() => {
+                        // Simulate wrong PIN for demonstration
+                        container.classList.add('shake');
+                        errorMsg.style.opacity = '1';
+                        setTimeout(() => {
+                            clearPin();
+                        }, 1000);
+                    }, 300);
+                }
+            }
+        }
+
+        function removePin() {
+            if (currentPin > 0) {
+                currentPin--;
+                updateDots();
+            }
+        }
+        
+        function clearPin() {
+            currentPin = 0;
+            updateDots();
+        }
+
+        // Keyboard support
+        document.addEventListener('keydown', (e) => {
+            if (e.key >= '0' && e.key <= '9') {
+                addPin();
+            } else if (e.key === 'Backspace') {
+                removePin();
+            } else if (e.key === 'Escape') {
+                clearPin();
+            }
+        });
+    </script>
+</body></html>
