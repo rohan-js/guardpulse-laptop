@@ -19,6 +19,7 @@ public partial class SetupWindow : Window
 
     private string? _deviceId;
     private string? _secret;
+    private string? _code;
 
     public SetupWindow(PipeClient pipe)
     {
@@ -82,9 +83,15 @@ public partial class SetupWindow : Window
             var code = root.TryGetProperty("code", out var c) ? c.GetString() : null;
             if (string.IsNullOrEmpty(deviceId)) return;
 
-            if (deviceId != _deviceId)
+            // Re-render whenever ANY credential changed - the pairing secret
+            // rotates every 10 minutes, so comparing deviceId alone would
+            // freeze the QR on a stale secret and every pair attempt would
+            // be rejected by the service.
+            if (deviceId != _deviceId || secret != _secret || code != _code)
             {
                 _deviceId = deviceId;
+                _secret = secret;
+                _code = code;
                 DeviceIdText.Text = deviceId;
                 CodeText.Text = FormatCode(code);
                 RenderQr($"guardpulse://pair?deviceId={deviceId}&secret={secret ?? ""}");

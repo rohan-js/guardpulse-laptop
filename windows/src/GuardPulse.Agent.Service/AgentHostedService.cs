@@ -438,6 +438,32 @@ public sealed class AgentHostedService(
         _deviceId = deviceId;
         var json = JsonSerializer.Serialize(new DeviceIdentityJson(deviceId, secret, code), JsonOpts);
         File.WriteAllText(Path.Combine(_stateDir, "device.json"), json);
+        _lastPairingSecret = secret;
+        _lastPairingCode = code;
+    }
+
+    // Pairing secret/code as of the last device.json write. Rotation is lazy
+    // (inside PairingManager.Current, on 10-min TTL expiry) and does NOT touch
+    // device.json by itself - this tracking lets the boundary tick notice a
+    // rotation and refresh the file, keeping the tray QR in sync.
+    private string? _lastPairingSecret;
+    private string? _lastPairingCode;
+
+    private void RefreshPairingArtifactsIfNeeded()
+    {
+        try
+        {
+            var cur = _pairing.Current; // lazily rotates stale credentials
+            if (cur.Secret != _lastPairingSecret || cur.ManualCode != _lastPairingCode)
+            {
+                WriteDeviceJson();
+                _logger.LogInformation("Pairing credentials rotated; device.json refreshed for the tray QR");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pairing artifact refresh failed");
+        }
     }
 
     private void SubscribeEvents()
@@ -3220,6 +3246,10 @@ var minutes = ms / 60_000L;
         CheckScreenTimeWarnings();
         if (string.IsNullOrEmpty(_ownerUid))
         {
+            // Keep device.json in sync with lazy secret rotation so the tray QR
+            // never shows a stale secret (a stale QR makes every pair attempt
+            // get rejected with no recovery until a service restart).
+            RefreshPairingArtifactsIfNeeded();
             TryStartPairStreamIfNeeded();
             _ = RunSafeAsync("pairing-boundary", PollPairRequestsAsync);
         }
