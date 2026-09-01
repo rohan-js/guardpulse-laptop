@@ -25,17 +25,26 @@ public interface ISecretStore
 /// %ProgramData%\GuardPulse\Laptop\{fileName}. Uses crypt32 directly because the
 /// Agent.Core project (plain net8.0) must not take the ProtectedData package
 /// reference.
+/// Durability: every save also maintains a second, machine-scope encrypted
+/// mirror ({fileName}.mirror). The primary blob is CurrentUser-scoped, so a
+/// corrupted primary file (dirty shutdown losing a torn write) or a changed
+/// service principal would previously SILENTLY wipe the deviceId/refresh token
+/// and orphan the pairing. Load() now falls back to the mirror and restores the
+/// primary, so the identity survives either failure. Only when BOTH blobs are
+/// unreadable does the store start empty (intended for a deliberate data wipe).
 /// </summary>
 public sealed class DpapiSecretStore : ISecretStore
 {
     private const int CryptProtectUiForbidden = 0x1;
+    private const int CryptProtectLocalMachine = 0x4;
 
     private readonly string _path;
+    private readonly string _mirrorPath;
     private readonly object _gate = new();
     private readonly Action<string>? _diagnostics;
     private Dictionary<string, string> _values;
 
-    public DpapiSecretStore(string fileName, Action<string>? diagnostics = null)
+    public DpapiSecretStore(string fileName, Action<string>? diagnostics = null, string? directory = null)
     {
         if (string.IsNullOrWhiteSpace(fileName))
         {
@@ -43,11 +52,12 @@ public sealed class DpapiSecretStore : ISecretStore
         }
 
         _diagnostics = diagnostics;
-        var root = Path.Combine(
+        var root = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "GuardPulse",
             "Laptop");
         _path = Path.Combine(root, fileName);
+        _mirrorPath = _path + ".mirror";
         _values = Load();
     }
 
@@ -84,6 +94,7 @@ public sealed class DpapiSecretStore : ISecretStore
 
     private Dictionary<string, string> Load()
     {
+        // Primary: CurrentUser-scope blob written by this service principal.
         try
         {
             var cipher = File.ReadAllBytes(_path);
@@ -93,15 +104,35 @@ public sealed class DpapiSecretStore : ISecretStore
         catch (Exception ex)
         {
             // Missing, corrupted, or encrypted for a different principal (e.g. after
-            // service account changes): start empty rather than failing the agent, but
-            // surface the reason so a wiped store is observable instead of silent.
+            // service account changes): fall back to the machine-scope mirror before
+            // starting empty - an empty store here means a NEW deviceId and anonymous
+            // uid, which orphans the pairing on the parent's phone.
             if (File.Exists(_path))
             {
                 _diagnostics?.Invoke("DpapiSecretStore load failed (file exists): " + ex.Message);
             }
-
-            return new Dictionary<string, string>();
         }
+
+        // Mirror: LocalMachine-scope blob, decryptable by the service account
+        // regardless of what invalidated the primary.
+        try
+        {
+            var cipher = File.ReadAllBytes(_mirrorPath);
+            var plain = Unprotect(cipher, machineScope: true);
+            var restored = JsonSerializer.Deserialize<Dictionary<string, string>>(plain);
+            if (restored is not null && restored.Count > 0)
+            {
+                _diagnostics?.Invoke("DpapiSecretStore primary unreadable - identity restored from mirror (" + restored.Count + " keys)");
+                WritePrimary(restored);
+                return restored;
+            }
+        }
+        catch (Exception ex)
+        {
+            _diagnostics?.Invoke("DpapiSecretStore mirror restore failed: " + ex.Message);
+        }
+
+        return new Dictionary<string, string>();
     }
 
     private void Save()
@@ -112,19 +143,35 @@ public sealed class DpapiSecretStore : ISecretStore
             Directory.CreateDirectory(directory);
         }
 
-        var plain = JsonSerializer.Serialize(_values);
+        WritePrimary(_values);
+        WriteMirror(_values);
+    }
+
+    private void WritePrimary(Dictionary<string, string> values)
+    {
+        var plain = JsonSerializer.Serialize(values);
         var cipher = Protect(Encoding.UTF8.GetBytes(plain));
         var tempPath = _path + ".tmp";
         File.WriteAllBytes(tempPath, cipher);
         File.Move(tempPath, _path, overwrite: true);
     }
 
-    private static byte[] Protect(byte[] data)
+    private void WriteMirror(Dictionary<string, string> values)
+    {
+        var plain = JsonSerializer.Serialize(values);
+        var cipher = Protect(Encoding.UTF8.GetBytes(plain), machineScope: true);
+        var tempPath = _mirrorPath + ".tmp";
+        File.WriteAllBytes(tempPath, cipher);
+        File.Move(tempPath, _mirrorPath, overwrite: true);
+    }
+
+    private static byte[] Protect(byte[] data, bool machineScope = false)
     {
         var input = ToBlob(data);
         try
         {
-            if (!CryptProtectData(ref input, "GuardPulse.Agent.Core", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
+            var flags = CryptProtectUiForbidden | (machineScope ? CryptProtectLocalMachine : 0);
+            if (!CryptProtectData(ref input, "GuardPulse.Agent.Core", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, flags, out var output))
             {
                 throw new CryptographicException($"CryptProtectData failed with error {Marshal.GetLastWin32Error()}.");
             }
@@ -144,12 +191,15 @@ public sealed class DpapiSecretStore : ISecretStore
         }
     }
 
-    private static byte[] Unprotect(byte[] data)
+    private static byte[] Unprotect(byte[] data, bool machineScope = false)
     {
+        // DPAPI scopes are encoded in the blob itself; the flag only matters when
+        // protecting. Passing it on unprotect is harmless and keeps intent explicit.
         var input = ToBlob(data);
         try
         {
-            if (!CryptUnprotectData(ref input, out _, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
+            var flags = CryptProtectUiForbidden | (machineScope ? CryptProtectLocalMachine : 0);
+            if (!CryptUnprotectData(ref input, out _, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, flags, out var output))
             {
                 throw new CryptographicException($"CryptUnprotectData failed with error {Marshal.GetLastWin32Error()}.");
             }
