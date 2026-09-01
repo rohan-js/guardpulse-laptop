@@ -96,7 +96,9 @@ public static class PolicyConstants
     public const string TAMPER_RISKY_SETTINGS_OPENED = "riskySettingsOpened";
     public const string TAMPER_PIN_RETRY_LOCKED = "pinRetryLocked";
 
-    public const long HEARTBEAT_INTERVAL_MS = 60_000L;
+    // 30s: the phone's online/offline badge can only be as fresh as the last
+    // heartbeat, so 60s meant a live laptop could read "offline" for a minute.
+    public const long HEARTBEAT_INTERVAL_MS = 30_000L;
     public const long USAGE_SCAN_INTERVAL_MS = 60_000L;
     public const long FOREGROUND_USAGE_UPLOAD_INTERVAL_MS = 10_000L;
     public const long FOREGROUND_USAGE_EXTRAPOLATION_MAX_MS = 20_000L;

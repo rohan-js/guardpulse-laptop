@@ -46,8 +46,11 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
     public const string OwnerRefreshTokenSecretKey = "auth.ownerRefreshToken";
 
     private const int TokenExpiryMarginSeconds = 60;
-    private const int InitialRetryMs = 5_000;
-    private const int MaxRetryMs = 5 * 60_000;
+    // Fast reconnect: a dropped SSE stream must recover in seconds, not minutes -
+    // every stream (control, commands, unlock requests, pairing) is blind during
+    // the backoff, so a long cap silently degrades the whole channel to polling.
+    private const int InitialRetryMs = 1_000;
+    private const int MaxRetryMs = 15_000;
     private static readonly TimeSpan RestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StreamReadIdleTimeout = TimeSpan.FromMinutes(10);
     // How long an SSE connect may spend waiting for HTTP response headers. Without

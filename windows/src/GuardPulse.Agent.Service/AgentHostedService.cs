@@ -33,8 +33,11 @@ public sealed class AgentHostedService(
     private static readonly TimeSpan CommandPollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan UnlockPollInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PairPollInterval = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ActivityFlushInterval = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan StateUploadInterval = TimeSpan.FromSeconds(60);
+    // Telemetry cadence = how stale the phone's view of this laptop can get while
+    // idle. These bound the laptop->phone direction (push-based on both ends once
+    // the write lands, so the interval IS the latency).
+    private static readonly TimeSpan ActivityFlushInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan StateUploadInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan DeadManCheckInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DeadManGrace = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ActivityRetention = TimeSpan.FromDays(30);
@@ -165,10 +168,12 @@ public sealed class AgentHostedService(
                 IntervalLoopAsync("heartbeat", TimeSpan.FromMilliseconds(PolicyConstants.HEARTBEAT_INTERVAL_MS), HeartbeatAsync),
                 IntervalLoopAsync("state-upload", StateUploadInterval, () => UploadStatesAsync(false)),
                 IntervalLoopAsync("activity-flush", ActivityFlushInterval, () => FlushActivityAsync(false)),
-                // 15s ticker for daily-limit/budget/schedule boundaries + 5/10m warnings + pairing while unpaired.
-                IntervalLoopAsync("boundary", TimeSpan.FromSeconds(15), BoundaryTickAsync),
-                // 15s browser roll-up: accrue active-domain time and refresh state/browser.
-                IntervalLoopAsync("browser-rollup", TimeSpan.FromSeconds(15), BrowserRollupTickAsync),
+                // 5s ticker for daily-limit/budget/schedule boundaries + 5/10m warnings
+                // + pairing/unlock/command fallback polls: schedule transitions and
+                // SSE-fallback delivery land within seconds instead of quarter-minutes.
+                IntervalLoopAsync("boundary", TimeSpan.FromSeconds(5), BoundaryTickAsync),
+                // 10s browser roll-up: accrue active-domain time and refresh state/browser.
+                IntervalLoopAsync("browser-rollup", TimeSpan.FromSeconds(10), BrowserRollupTickAsync),
                 IntervalLoopAsync("dead-man", DeadManCheckInterval, () => { DeadManCheck(); return Task.CompletedTask; }));
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -1200,6 +1205,20 @@ var minutes = ms / 60_000L;
                 _unlocks.Grant(appKey);
             }
 
+            // The grant alone waits for the next periodic re-evaluation before
+            // anything resumes. Parity with the SSE approval path: resume now, drop
+            // the overlay, then re-evaluate so a still-locked foreground app re-locks
+            // immediately instead of staying resumed.
+            _suspender.ResumeAll();
+            _pipeHost.BroadcastUnlock();
+            _activity.SetOverlayState("none");
+            lock (_gate)
+            {
+                _currentOverlay = "none";
+            }
+
+            EvaluateCurrentForeground();
+
             return DashboardResult(req, true, null);
         }
         catch (Exception ex)
@@ -2056,12 +2075,31 @@ var minutes = ms / 60_000L;
             return;
         }
 
+        bool sameApp;
         lock (_gate)
         {
-            if (string.Equals(_currentAppKey, appKey, StringComparison.OrdinalIgnoreCase))
+            sameApp = string.Equals(_currentAppKey, appKey, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (sameApp)
+        {
+            // Same app — but it may have just relaunched while a lock decision was
+            // active; returning here would let the fresh process free-run until the
+            // next periodic evaluation. Re-verify immediately. When the decision is
+            // "unlocked" this is a no-op, so ordinary window switches inside one app
+            // don't trigger repeated flushes/uploads.
+            var (locked, reason) = DecideFor(appKey);
+            if (locked)
             {
-                return; // same app; periodic re-evaluation covers time-based changes
+                if (string.Equals(reason, "dailyLimit", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ledger.MarkDailyBlocked(appKey);
+                }
+
+                ApplyDecision(appKey, locked, reason);
             }
+
+            return;
         }
 
         var now = NowMs();

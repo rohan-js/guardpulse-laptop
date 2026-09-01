@@ -22,8 +22,11 @@ public sealed class SyncEngine
     private const int ReapplyRetryMs = 5_000;
     // REST fallback for the control/v2 SSE stream: when the stream is silently dead a
     // parent control write would otherwise never be seen. Polls the node directly and
-    // feeds the same handler; the raw-content dedup skips identical snapshots.
-    private const int ControlPollIntervalMs = 30_000;
+    // feeds the same handler; the raw-content dedup skips identical snapshots. Fast
+    // (5s) while degraded so a parent lock lands in seconds; skipped entirely while
+    // the stream is confirmed healthy - SSE pushes make the poll redundant there.
+    private const int ControlPollIntervalMs = 5_000;
+    private static readonly TimeSpan SseHealthyWindow = TimeSpan.FromSeconds(10);
     // Bounded retries for the sync/applied ack so a transient PATCH failure (rules or
     // transport) never strands the parent on "Waiting for laptop" forever.
     private const int AckMaxAttempts = 3;
@@ -55,6 +58,9 @@ public sealed class SyncEngine
     private int _dispatchGeneration;
     private bool _started;
     private DeviceRegistrar? _registrar;
+    // Last time the .info/connected stream confirmed connectivity; gates the
+    // control catch-up poll (redundant while the push stream is healthy).
+    private DateTime _lastStreamHealthyUtc = DateTime.MinValue;
 
     public SyncEngine(IFirebaseClient firebase, ISecretStore secrets, string deviceId, TimeProvider time)
     {
@@ -1030,6 +1036,13 @@ public sealed class SyncEngine
                 return;
             }
 
+            // SSE confirmed healthy recently? The stream pushes every change
+            // instantly - a GET now would be redundant traffic. Skip this tick.
+            if (_time.GetUtcNow().UtcDateTime - _lastStreamHealthyUtc < SseHealthyWindow)
+            {
+                continue;
+            }
+
             try
             {
                 var raw = await _firebase.GetAsync(FirebasePaths.DeviceControlV2(_deviceId), ct).ConfigureAwait(false);
@@ -1055,6 +1068,7 @@ public sealed class SyncEngine
 
         if (connected)
         {
+            _lastStreamHealthyUtc = _time.GetUtcNow().UtcDateTime;
             lock (_gate)
             {
                 SessionId = Guid.NewGuid().ToString("D");
