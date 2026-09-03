@@ -30,10 +30,14 @@ public sealed class EnforcementEngine
         this.time = time;
     }
 
-    /// <summary>Safe Mode is armed and its Until deadline is still in the future.</summary>
-    public bool SafeModeActive(ControlSnapshotV2 snapshot)
+    /// <summary>
+    /// Safe Mode is armed and its Until deadline is still in the future.
+    /// <paramref name="serverNowMs"/> is the RTDB/server-clock epoch ms (Safe Mode's Until
+    /// is written against server time); null falls back to the local clock.
+    /// </summary>
+    public bool SafeModeActive(ControlSnapshotV2 snapshot, long? serverNowMs = null)
     {
-        return snapshot.SafeMode is { Enabled: true } && snapshot.SafeMode.Until > NowMs();
+        return snapshot.SafeMode is { Enabled: true } && snapshot.SafeMode.Until > (serverNowMs ?? NowMs());
     }
 
     /// <summary>True when an enabled allowed-hours schedule excludes the current device-local minute.</summary>
@@ -93,19 +97,22 @@ public sealed class EnforcementEngine
         return !appKey.StartsWith(windowsDir, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <param name="serverNowMs">RTDB/server-clock epoch ms for Safe Mode and unlock
+    /// deadline checks; null falls back to the local clock.</param>
     public BlockDecision Decide(
         ControlSnapshotV2 snapshot,
         string appKey,
         UsageLedger ledger,
         OneVisitUnlocks unlocks,
-        string agentAppKey)
+        string agentAppKey,
+        long? serverNowMs = null)
     {
         if (string.Equals(appKey, agentAppKey, StringComparison.OrdinalIgnoreCase))
         {
             return NotLocked(appKey);
         }
 
-        if (SafeModeActive(snapshot))
+        if (SafeModeActive(snapshot, serverNowMs))
         {
             return NotLocked(appKey);
         }
@@ -122,7 +129,7 @@ public sealed class EnforcementEngine
 
         var apps = snapshot.EffectiveApps();
 
-        if (unlocks.IsUnlocked(appKey))
+        if (unlocks.IsUnlocked(appKey, serverNowMs))
         {
             return NotLocked(appKey);
         }

@@ -53,10 +53,46 @@ public partial class LockWindow : Window
         _blockedTimer.Tick += (_, _) => RefreshBlockedText();
         PreviewKeyDown += OnPreviewKeyDown;
         StateChanged += OnWindowStateChanged;
+        // Something moved the wall (z-order/activation tricks, shell placement): snap
+        // it back over the whole virtual desktop.
+        LocationChanged += (_, _) =>
+        {
+            if (IsVisible && !_coveringDesktop) CoverVirtualDesktop();
+        };
         SourceInitialized += (_, _) =>
         {
             DwmBlur.Enable(this, System.Windows.Media.Color.FromRgb(0xFC, 0xF8, 0xFB), 0.75);
         };
+        CoverVirtualDesktop();
+    }
+
+    private bool _coveringDesktop;
+
+    /// <summary>
+    /// Covers the FULL virtual desktop (every monitor): a single-monitor Maximized
+    /// window leaves the other screens usable while the wall is up. Explicit bounds
+    /// require a Manual (Normal, non-maximized) state.
+    /// </summary>
+    private void CoverVirtualDesktop()
+    {
+        _coveringDesktop = true;
+        try
+        {
+            if (WindowState != WindowState.Normal)
+            {
+                WindowState = WindowState.Normal;
+            }
+
+            WindowStyle = WindowStyle.None;
+            Left = SystemParameters.VirtualScreenLeft;
+            Top = SystemParameters.VirtualScreenTop;
+            Width = SystemParameters.VirtualScreenWidth;
+            Height = SystemParameters.VirtualScreenHeight;
+        }
+        finally
+        {
+            _coveringDesktop = false;
+        }
     }
 
     public event Action? DesktopMinimized;
@@ -83,11 +119,7 @@ public partial class LockWindow : Window
         WaitingPanel.Visibility = Visibility.Collapsed;
         AskParentButton.IsEnabled = true;
         RefreshBlockedText();
-
-        if (WindowState != WindowState.Maximized)
-        {
-            WindowState = WindowState.Maximized;
-        }
+        CoverVirtualDesktop();
 
         if (!IsVisible)
         {
@@ -108,6 +140,36 @@ public partial class LockWindow : Window
         if (IsVisible) Hide();
     }
 
+    /// <summary>
+    /// Full-desktop hold: keeps the wall visible across every monitor without naming a
+    /// locked app (used while a suspended/blocked app is still running behind an allowed
+    /// foreground window — the wall must not auto-hide just because focus moved).
+    /// The wall still hides via its own PIN success / service unlock paths.
+    /// </summary>
+    public void HoldDesktop()
+    {
+        if (_appKey.Length > 0)
+        {
+            AppLabel.Text = "Protected apps are locked";
+            ReasonText.Text = "Locked by parent";
+            ClearPin();
+        }
+
+        _appKey = "";
+        RefreshBlockedText();
+        CoverVirtualDesktop();
+
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        Topmost = false;
+        Topmost = true;
+        Activate();
+        Focus();
+    }
+
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
         if (WindowState == WindowState.Minimized)
@@ -120,12 +182,11 @@ public partial class LockWindow : Window
             }
             Hide();
         }
-        else if (WindowState is WindowState.Maximized or WindowState.Normal)
+        else
         {
-            if (WindowState != WindowState.Maximized)
-            {
-                WindowState = WindowState.Maximized;
-            }
+            // Manual/Normal: re-snap over the virtual desktop instead of restoring
+            // a single-monitor Maximized state.
+            CoverVirtualDesktop();
             Topmost = false;
             Topmost = true;
             Activate();
@@ -270,11 +331,7 @@ public partial class LockWindow : Window
             return;
         }
 
-        if (WindowState != WindowState.Maximized)
-        {
-            WindowState = WindowState.Maximized;
-        }
-
+        CoverVirtualDesktop();
         Topmost = false;
         Topmost = true;
         Activate();

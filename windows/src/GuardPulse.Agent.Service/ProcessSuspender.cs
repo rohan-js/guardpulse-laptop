@@ -229,28 +229,40 @@ internal sealed class ProcessSuspender
 
     private int TrySuspend(Process process, string tag)
     {
-        var handle = NativeMethods.OpenProcess(
-            NativeMethods.PROCESS_SUSPEND_RESUME | NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION,
-            false,
-            process.Id);
-        if (handle == IntPtr.Zero)
-        {
-            _logger.LogWarning("Could not open pid {Pid} for suspend (win32 error {Error})",
-                process.Id, Marshal.GetLastWin32Error());
-            return 0;
-        }
-
-        var safe = new Microsoft.Win32.SafeHandles.SafeProcessHandle(handle, true);
-        var status = NativeMethods.NtSuspendProcess(safe.DangerousGetHandle());
-        if (status != 0)
-        {
-            _logger.LogWarning("NtSuspendProcess failed for pid {Pid} (status 0x{Status:X8})", process.Id, status);
-            safe.Dispose();
-            return 0;
-        }
-
+        // Open + suspend + insert must be ATOMIC under _gate: a concurrent suspend
+        // loop could otherwise insert the same pid between our table check and this
+        // insert — double NtSuspend means one NtResume never resumes it, and the
+        // overwritten entry would strand the first suspended handle forever.
         lock (_gate)
         {
+            if (_suspendedByPid.ContainsKey(process.Id))
+            {
+                // Lost the race: the concurrent loop now owns this pid.
+                return 0;
+            }
+
+            var handle = NativeMethods.OpenProcess(
+                NativeMethods.PROCESS_SUSPEND_RESUME | NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                process.Id);
+            if (handle == IntPtr.Zero)
+            {
+                _logger.LogWarning("Could not open pid {Pid} for suspend (win32 error {Error})",
+                    process.Id, Marshal.GetLastWin32Error());
+                return 0;
+            }
+
+            var safe = new Microsoft.Win32.SafeHandles.SafeProcessHandle(handle, true);
+            var status = NativeMethods.NtSuspendProcess(safe.DangerousGetHandle());
+            if (status != 0)
+            {
+                _logger.LogWarning("NtSuspendProcess failed for pid {Pid} (status 0x{Status:X8})", process.Id, status);
+                safe.Dispose();
+                return 0;
+            }
+
+            // The pid cannot appear in the table here: the insert above and every
+            // reader/writer hold _gate, and we re-checked at entry.
             _suspendedByPid[process.Id] = new SuspendedProcess(tag, safe, process);
         }
 

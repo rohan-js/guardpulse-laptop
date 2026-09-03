@@ -59,11 +59,4 @@
     </Content>
   </ItemGroup>
 
-  <!-- Local control dashboard page (served by LocalDashboardServer over loopback). -->
-  <ItemGroup>
-    <Content Include="Dashboard\dashboard.html">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
 </Project>

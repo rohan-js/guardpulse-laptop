@@ -67,41 +67,12 @@ internal sealed class AgentPipeHost : IDisposable
     /// <summary>(session, isAdmin) from an adminState message: whether the child's account holds administrator rights.</summary>
     public event Action<int, bool>? AdminStateReceived;
 
-    /// <summary>(req) -> full reply JSON for a controlGet request.</summary>
-    public Func<string, string>? ControlGetHandler;
-
-    /// <summary>(req, pin) -> full reply JSON for a controlLogin request.</summary>
-    public Func<string, string, string>? ControlLoginHandler;
-
-    /// <summary>(req, patchJson) -> full reply JSON for a controlWrite request.</summary>
-    public Func<string, string, Task<string>>? ControlWriteHandler;
-
-    /// <summary>(req, appKey, type, durationMs) -> full reply JSON for a controlUnlock request.</summary>
-    public Func<string, string, string, long?, string>? ControlUnlockHandler;
-
-    /// <summary>(req, email, password) -> full reply JSON for an ownerLogin request (parent sign-in as owner).</summary>
-    public Func<string, string, string, Task<string>>? OwnerLoginHandler;
-
-    /// <summary>(req) -> full reply JSON listing the signed-in owner's paired devices.</summary>
-    public Func<string, Task<string>>? ListDevicesHandler;
-
-    /// <summary>(req, deviceId) -> full reply JSON for a deviceState request (remote device snapshot).</summary>
-    public Func<string, string, Task<string>>? DeviceStateHandler;
-
-    /// <summary>(req, deviceId, patchJson) -> full reply JSON for a deviceWrite request.</summary>
-    public Func<string, string, string, Task<string>>? DeviceWriteHandler;
-
-    /// <summary>(req, deviceId, appKey, type, durationMs) -> full reply JSON for a deviceUnlock request on a remote device.</summary>
-    public Func<string, string, string, string, long?, Task<string>>? DeviceUnlockHandler;
-
-    /// <summary>(req, deviceId, type, packageName) -> full reply JSON for a deviceCommand (rescan/reset/unpair/setup).</summary>
-    public Func<string, string, string, string?, Task<string>>? DeviceCommandHandler;
-
-    /// <summary>(req, deviceId, pin) -> full reply JSON for a devicePin (parent sets the child's PIN).</summary>
-    public Func<string, string, string, Task<string>>? DevicePinHandler;
-
-    /// <summary>(req, deviceId, requestId, action) -> full reply JSON for a deviceUnlockRespond (approve/deny a pending request).</summary>
-    public Func<string, string, string, string, Task<string>>? DeviceUnlockRespondHandler;
+    /// <summary>
+    /// The setup window requested the pairing credentials ("deviceInfo" request).
+    /// The handler receives the caller's req id and returns the complete reply JSON
+    /// (embedding that req id), or null when the credentials are unavailable.
+    /// </summary>
+    public event Func<string, string?>? DeviceInfoRequest;
 
     public int ConnectedAgents
     {
@@ -370,159 +341,30 @@ internal sealed class AgentPipeHost : IDisposable
                     break;
                 }
 
-                case "controlGet":
+                case "deviceInfo":
                 {
-                    var req = GetString(root, "req");
-                    try
+                    // Setup window asking for the pairing credentials (deviceId + QR
+                    // secret + code). The service answers from its secure store over
+                    // the same connection, correlated by the caller's "req" id — the
+                    // secret never touches the world-readable device.json.
+                    var req = root.TryGetProperty("req", out var reqEl)
+                        && reqEl.ValueKind == JsonValueKind.String ? reqEl.GetString() : null;
+                    if (string.IsNullOrEmpty(req))
                     {
-                        var reply = ControlGetHandler?.Invoke(req) ?? ErrorResponse(req, "not ready", "controlState");
+                        break;
+                    }
+
+                    var handler = DeviceInfoRequest;
+                    var reply = handler?.Invoke(req!);
+                    if (reply is null)
+                    {
+                        client.Send(ErrorResponse(req!, "device info unavailable", "deviceInfo"));
+                    }
+                    else
+                    {
                         client.Send(reply);
                     }
-                    catch (Exception ex)
-                    {
-                        client.Send(ErrorResponse(req, ex.Message, "controlState"));
-                    }
 
-                    break;
-                }
-
-                case "controlLogin":
-                {
-                    var req = GetString(root, "req");
-                    var pin = GetString(root, "pin");
-                    try
-                    {
-                        var reply = ControlLoginHandler?.Invoke(req, pin) ?? ErrorResponse(req, "not ready");
-                        client.Send(reply);
-                    }
-                    catch (Exception ex)
-                    {
-                        client.Send(ErrorResponse(req, ex.Message));
-                    }
-
-                    break;
-                }
-
-                case "controlWrite":
-                {
-                    var req = GetString(root, "req");
-                    var patch = root.TryGetProperty("patch", out var patchEl) ? patchEl.GetRawText() : "";
-                    _ = WriteRespondAsync(client, req, patch);
-                    break;
-                }
-
-                case "controlUnlock":
-                {
-                    var req = GetString(root, "req");
-                    var appKey = GetString(root, "appKey");
-                    var type = GetString(root, "type");
-                    long? durationMs = null;
-                    if (root.TryGetProperty("durationMs", out var durationEl)
-                        && durationEl.ValueKind == JsonValueKind.Number
-                        && durationEl.TryGetInt64(out var duration))
-                    {
-                        durationMs = duration;
-                    }
-
-                    try
-                    {
-                        var reply = ControlUnlockHandler?.Invoke(req, appKey, type, durationMs)
-                            ?? ErrorResponse(req, "not ready");
-                        client.Send(reply);
-                    }
-                    catch (Exception ex)
-                    {
-                        client.Send(ErrorResponse(req, ex.Message));
-                    }
-
-                    break;
-                }
-
-                case "ownerLogin":
-                {
-                    var req = GetString(root, "req");
-                    var email = GetString(root, "email");
-                    var password = GetString(root, "password");
-                    DispatchAsync(client, req, () => OwnerLoginHandler?.Invoke(req, email, password)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready", "ownerLoginResult")), "ownerLoginResult");
-                    break;
-                }
-
-                case "listDevices":
-                {
-                    var req = GetString(root, "req");
-                    DispatchAsync(client, req, () => ListDevicesHandler?.Invoke(req)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready", "deviceList")), "deviceList");
-                    break;
-                }
-
-                case "deviceState":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    DispatchAsync(client, req, () => DeviceStateHandler?.Invoke(req, deviceId)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready", "controlState")), "controlState");
-                    break;
-                }
-
-                case "deviceWrite":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    var patch = root.TryGetProperty("patch", out var patchEl) ? patchEl.GetRawText() : "";
-                    DispatchAsync(client, req, () => DeviceWriteHandler?.Invoke(req, deviceId, patch)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready")));
-                    break;
-                }
-
-                case "deviceUnlock":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    var appKey = GetString(root, "appKey");
-                    var type = GetString(root, "type");
-                    long? durationMs = null;
-                    if (root.TryGetProperty("durationMs", out var durationEl)
-                        && durationEl.ValueKind == JsonValueKind.Number
-                        && durationEl.TryGetInt64(out var duration))
-                    {
-                        durationMs = duration;
-                    }
-
-                    DispatchAsync(client, req, () => DeviceUnlockHandler?.Invoke(req, deviceId, appKey, type, durationMs)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready")));
-                    break;
-                }
-
-                case "deviceCommand":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    var type = GetString(root, "type");
-                    var packageName = GetString(root, "packageName");
-                    DispatchAsync(client, req, () => DeviceCommandHandler?.Invoke(req, deviceId, type, packageName)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready")));
-                    break;
-                }
-
-                case "devicePin":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    var pin = GetString(root, "pin");
-                    DispatchAsync(client, req, () => DevicePinHandler?.Invoke(req, deviceId, pin)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready")));
-                    break;
-                }
-
-                case "deviceUnlockRespond":
-                {
-                    var req = GetString(root, "req");
-                    var deviceId = GetString(root, "deviceId");
-                    var requestId = GetString(root, "requestId");
-                    var action = GetString(root, "action");
-                    DispatchAsync(client, req, () => DeviceUnlockRespondHandler?.Invoke(req, deviceId, requestId, action)
-                        ?? Task.FromResult(ErrorResponse(req, "not ready")));
                     break;
                 }
             }
@@ -535,36 +377,6 @@ internal sealed class AgentPipeHost : IDisposable
         {
             _logger.LogWarning(ex, "Pipe message dispatch failed");
         }
-    }
-
-    private async Task WriteRespondAsync(ClientConnection client, string req, string patch)
-    {
-        try
-        {
-            var reply = ControlWriteHandler != null ? await ControlWriteHandler(req, patch) : ErrorResponse(req, "not ready");
-            client.Send(reply);
-        }
-        catch (Exception ex)
-        {
-            client.Send(ErrorResponse(req, ex.Message));
-        }
-    }
-
-    /// <summary>Fire-and-forget dispatch for async owner-console handlers, sending their reply when ready.</summary>
-    private void DispatchAsync(ClientConnection client, string req, Func<Task<string>>? produce, string t = "controlResult")
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var reply = produce != null ? await produce() : ErrorResponse(req, "not ready", t);
-                client.Send(reply);
-            }
-            catch (Exception ex)
-            {
-                client.Send(ErrorResponse(req, ex.Message, t));
-            }
-        });
     }
 
     private static string ErrorResponse(string req, string error, string t = "controlResult") =>

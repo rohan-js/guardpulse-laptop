@@ -14,7 +14,6 @@ public partial class App : Application
     private ForegroundHook? _hook;
     private BrowserWatcher? _browserWatcher;
     private TrayHost? _tray;
-    private LocalDashboardServer? _dashboard;
     private LockWindow? _lockWindow;
     private readonly HashSet<string> _knownLockedApps = new(StringComparer.OrdinalIgnoreCase);
     private long _suppressLockUntilTick;
@@ -78,57 +77,84 @@ public partial class App : Application
             {
                 if (_lockWindow is { IsVisible: true } && appKey == _lockWindow.CurrentAppKey)
                 {
-                    Dispatcher.BeginInvoke(() => _lockWindow?.Reassert());
+                    // Synchronous re-assert: this hook callback runs on the WinEvent
+                    // thread, and an async BeginInvoke would lose the race against a
+                    // process fighting for foreground — the wall must be forward
+                    // before we return. Dispatcher.Invoke marshals to the WPF thread
+                    // and blocks here until it is done.
+                    try
+                    {
+                        Dispatcher.Invoke(() => _lockWindow?.Reassert());
+                    }
+                    catch (Exception)
+                    {
+                        // dispatcher shut down mid-switch; the next hook event retries
+                    }
                 }
                 else
                 {
                     var oldLockedKey = _lockWindow?.CurrentAppKey;
-                    Dispatcher.BeginInvoke(() =>
+                    try
                     {
-                        if (!string.IsNullOrEmpty(oldLockedKey) && oldLockedKey != appKey && _lockWindow is { IsVisible: true })
+                        Dispatcher.Invoke(() =>
                         {
-                            _lockWindow?.MinimizeBlockedApp(oldLockedKey);
-                        }
+                            if (!string.IsNullOrEmpty(oldLockedKey) && oldLockedKey != appKey && _lockWindow is { IsVisible: true })
+                            {
+                                _lockWindow?.MinimizeBlockedApp(oldLockedKey);
+                            }
 
-                        EnsureLockWindow().ShowFor(appKey, PolicyCache.LabelFor(appKey), blockedReason ?? "manual");
-                    });
+                            EnsureLockWindow().ShowFor(appKey, PolicyCache.LabelFor(appKey), blockedReason ?? "manual");
+                        });
+                    }
+                    catch (Exception)
+                    {
+                        // dispatcher shut down mid-switch; the next hook event retries
+                    }
                 }
             }
             else if (_lockWindow is { IsVisible: true } && appKey != _lockWindow.CurrentAppKey)
             {
+                // The wall hides ONLY via its own PIN success / service unlock paths.
+                // An allowed app in front never lifts it: the locked app may still be
+                // suspended behind this window, so switch to a full-desktop hold that
+                // stops naming the dead foreground app (keeps CoverVirtualDesktop
+                // refreshed for the whole virtual desktop).
                 var lockedKey = _lockWindow.CurrentAppKey;
-                Dispatcher.BeginInvoke(() =>
+                var lockedAppSuspended = _knownLockedApps.Contains(lockedKey)
+                    || (!string.IsNullOrEmpty(lockedKey) && _knownLockedApps.Contains(System.IO.Path.GetFileName(lockedKey)));
+                try
                 {
-                    if (_lockWindow is { IsVisible: true } && appKey != _lockWindow.CurrentAppKey)
+                    Dispatcher.Invoke(() =>
                     {
-                        _lockWindow.MinimizeBlockedApp(lockedKey);
-                        _lockWindow.HideLock();
-                    }
-                });
+                        if (_lockWindow is not { IsVisible: true } || appKey == _lockWindow.CurrentAppKey)
+                        {
+                            return;
+                        }
+
+                        if (lockedAppSuspended)
+                        {
+                            _lockWindow.HoldDesktop();
+                        }
+                        else
+                        {
+                            _lockWindow.MinimizeBlockedApp(lockedKey);
+                            _lockWindow.HideLock();
+                        }
+                    });
+                }
+                catch (Exception)
+                {
+                    // dispatcher shut down mid-switch
+                }
             }
         };
 
         _tray = new TrayHost(ShowSetup, () =>
         {
-            try { LocalDashboardServer.OpenInBrowser(); } catch { }
-        }, () =>
-        {
             if (_lockWindow is { IsVisible: true }) return;
             _tray?.Dispose();
             Shutdown();
         });
-
-        // Local web dashboard: loopback-only server the parent opens from the tray.
-        // Never let a dashboard failure break the protection agent.
-        try
-        {
-            _dashboard = new LocalDashboardServer(_pipe);
-            _dashboard.Start();
-        }
-        catch (Exception)
-        {
-            // dashboard unavailable; agent still protects the device
-        }
 
         _serviceWatch.Tick += OnServiceWatchTick;
         _serviceWatch.Start();
@@ -220,7 +246,6 @@ public partial class App : Application
                     // Control applied / usage written / unlock request / tamper event for a
                     // device: wake open console tabs watching it (SSE event stream).
                     var changedDevice = message.TryGetProperty("deviceId", out var dc) ? dc.GetString() : null;
-                    _dashboard?.PulseDeviceChanged(changedDevice);
                     break;
             }
         });
@@ -340,7 +365,6 @@ public partial class App : Application
         _pipe?.SendSetupClosed();
         _browserWatcher?.Dispose();
         _hook?.Dispose();
-        _dashboard?.Dispose();
         _pipe?.Dispose();
         try
         {

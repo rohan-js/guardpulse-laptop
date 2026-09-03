@@ -8,8 +8,7 @@
         ShowActivated="True"
         Focusable="True"
         AllowsTransparency="True"
-        Background="Transparent"
-        WindowState="Maximized">
+        Background="Transparent">
     <!-- Digital Pulse lock overlay: frosted full-screen layer + centered glass card -->
     <Border Background="#BFFCF8FB">
         <Grid>

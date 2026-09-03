@@ -9,9 +9,7 @@ namespace GuardPulse.Agent.Session;
 
 public partial class SetupWindow : Window
 {
-    private static readonly string DeviceJsonPath =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "GuardPulse", "Laptop", "device.json");
+    private static readonly TimeSpan DeviceInfoTimeout = TimeSpan.FromSeconds(4);
 
     private readonly PipeClient _pipe;
     private readonly System.Windows.Threading.DispatcherTimer _refresh =
@@ -66,22 +64,39 @@ public partial class SetupWindow : Window
 
     private void LoadDevice()
     {
+        // Connected fires on the pipe's receive thread and LoadDevice touches UI, so
+        // hop to the dispatcher first; refresh ticks already arrive on it (no-op hop).
+        _ = Dispatcher.InvokeAsync(LoadDeviceOnUiThread);
+    }
+
+    private async void LoadDeviceOnUiThread()
+    {
         try
         {
-            if (!File.Exists(DeviceJsonPath))
+            // The QR payload needs the pairing secret, which never leaves the service's
+            // secret store onto the world-readable device.json: request it over the pipe.
+            if (!_pipe.IsConnected)
             {
                 DeviceIdText.Text = "waiting for service...";
                 CodeText.Text = "— — —";
                 return;
             }
 
-            var json = File.ReadAllText(DeviceJsonPath);
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            var deviceId = root.TryGetProperty("deviceId", out var id) ? id.GetString() : null;
-            var secret = root.TryGetProperty("secret", out var s) ? s.GetString() : null;
-            var code = root.TryGetProperty("code", out var c) ? c.GetString() : null;
-            if (string.IsNullOrEmpty(deviceId)) return;
+            var reply = await _pipe.SendRequestAsync("deviceInfo", new { }, DeviceInfoTimeout);
+            if (reply is not JsonElement info)
+            {
+                Console.Error.WriteLine("[SetupWindow] deviceInfo request timed out or the pipe dropped; retrying on next tick");
+                return;
+            }
+
+            var deviceId = info.TryGetProperty("deviceId", out var id) ? id.GetString() : null;
+            var secret = info.TryGetProperty("secret", out var s) ? s.GetString() : null;
+            var code = info.TryGetProperty("code", out var c) ? c.GetString() : null;
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                Console.Error.WriteLine("[SetupWindow] deviceInfo reply had no deviceId");
+                return;
+            }
 
             // Re-render whenever ANY credential changed - the pairing secret
             // rotates every 10 minutes, so comparing deviceId alone would
@@ -100,9 +115,10 @@ public partial class SetupWindow : Window
                     : "Connecting to service...";
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // file may be mid-write by the service; next tick retries
+            // service unreachable or reply malformed; next tick retries
+            Console.Error.WriteLine($"[SetupWindow] LoadDevice failed: {ex.Message}");
         }
     }
 

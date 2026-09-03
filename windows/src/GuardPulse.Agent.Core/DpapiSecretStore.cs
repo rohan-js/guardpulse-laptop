@@ -99,7 +99,17 @@ public sealed class DpapiSecretStore : ISecretStore
         {
             var cipher = File.ReadAllBytes(_path);
             var plain = Unprotect(cipher);
-            return JsonSerializer.Deserialize<Dictionary<string, string>>(plain) ?? new Dictionary<string, string>();
+            var primary = JsonSerializer.Deserialize<Dictionary<string, string>>(plain)
+                ?? new Dictionary<string, string>();
+            if (primary.Count > 0)
+            {
+                return primary;
+            }
+
+            // A decryptable-but-empty primary usually means a torn write took both
+            // blobs down at once (0.2.11 window) - still worth consulting the mirror
+            // before declaring the identity gone.
+            _diagnostics?.Invoke("DpapiSecretStore primary decrypts to empty; trying mirror.");
         }
         catch (Exception ex)
         {
@@ -152,7 +162,12 @@ public sealed class DpapiSecretStore : ISecretStore
         var plain = JsonSerializer.Serialize(values);
         var cipher = Protect(Encoding.UTF8.GetBytes(plain));
         var tempPath = _path + ".tmp";
-        File.WriteAllBytes(tempPath, cipher);
+        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(cipher, 0, cipher.Length);
+            stream.Flush(flushToDisk: true);
+        }
+
         File.Move(tempPath, _path, overwrite: true);
     }
 
@@ -161,7 +176,12 @@ public sealed class DpapiSecretStore : ISecretStore
         var plain = JsonSerializer.Serialize(values);
         var cipher = Protect(Encoding.UTF8.GetBytes(plain), machineScope: true);
         var tempPath = _mirrorPath + ".tmp";
-        File.WriteAllBytes(tempPath, cipher);
+        using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            stream.Write(cipher, 0, cipher.Length);
+            stream.Flush(flushToDisk: true);
+        }
+
         File.Move(tempPath, _mirrorPath, overwrite: true);
     }
 

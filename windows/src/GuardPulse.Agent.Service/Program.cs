@@ -47,6 +47,7 @@ internal sealed class FileLoggerProvider : ILoggerProvider
         _directory = directory;
         _minimumLevel = minimumLevel;
         Directory.CreateDirectory(directory);
+        FileLogger.CleanupOldLogs(directory);
     }
 
     public static FileLoggerProvider Create()
@@ -81,6 +82,13 @@ internal sealed class FileLoggerProvider : ILoggerProvider
 
 internal sealed class FileLogger(string category, string directory, LogLevel minimumLevel) : ILogger
 {
+    // One log file per day; a runaway verbose day must not fill the disk, so the
+    // active file rolls at 5 MB to service-<timestamp>.log.old and rolled files are
+    // pruned at startup (7 days / 5 kept).
+    private const long MaxLogBytes = 5 * 1024 * 1024;
+    private const int OldLogRetentionDays = 7;
+    private const int OldLogMaxCount = 5;
+
     private static readonly object Gate = new();
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -107,12 +115,78 @@ internal sealed class FileLogger(string category, string directory, LogLevel min
             var path = Path.Combine(directory, $"service-{DateTime.Now:yyyyMMdd}.log");
             lock (Gate)
             {
+                RollIfNeeded(path);
                 File.AppendAllText(path, line);
             }
         }
         catch
         {
             // logging must never crash the service
+        }
+    }
+
+    /// <summary>Rolls the active log file to .log.old when it exceeds the size cap.</summary>
+    private static void RollIfNeeded(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length <= MaxLogBytes)
+            {
+                return;
+            }
+
+            var rolled = Path.Combine(
+                Path.GetDirectoryName(path)!,
+                $"service-{DateTime.Now:yyyyMMdd-HHmmss}.log.old");
+            File.Move(path, rolled, overwrite: true);
+        }
+        catch
+        {
+            // rotation is best effort; keep appending to the original file on failure
+        }
+    }
+
+    /// <summary>Deletes .old rolls older than the retention window, then caps the count.</summary>
+    internal static void CleanupOldLogs(string directory)
+    {
+        try
+        {
+            var cutoff = DateTime.Now - TimeSpan.FromDays(OldLogRetentionDays);
+            var olds = Directory.EnumerateFiles(directory, "*.log.old")
+                .Select(f => new FileInfo(f))
+                .OrderBy(f => f.LastWriteTimeUtc)
+                .ToList();
+
+            foreach (var old in olds.Where(f => f.LastWriteTime < cutoff))
+            {
+                TryDelete(old);
+            }
+
+            var remaining = Directory.EnumerateFiles(directory, "*.log.old")
+                .Select(f => new FileInfo(f))
+                .OrderBy(f => f.LastWriteTimeUtc)
+                .ToList();
+            foreach (var old in remaining.Take(Math.Max(0, remaining.Count - OldLogMaxCount)))
+            {
+                TryDelete(old);
+            }
+        }
+        catch
+        {
+            // cleanup is best effort
+        }
+    }
+
+    private static void TryDelete(FileInfo file)
+    {
+        try
+        {
+            file.Delete();
+        }
+        catch
+        {
+            // another logger instance may hold it; retry next startup
         }
     }
 }

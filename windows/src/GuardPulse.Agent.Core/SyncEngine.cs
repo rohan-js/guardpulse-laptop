@@ -57,6 +57,7 @@ public sealed class SyncEngine
     private long _serverOffsetMs;
     private int _dispatchGeneration;
     private bool _started;
+    private int _streamConnected; // 1 while .info/connected last reported true
     private DeviceRegistrar? _registrar;
     // Last time the .info/connected stream confirmed connectivity; gates the
     // control catch-up poll (redundant while the push stream is healthy).
@@ -130,11 +131,21 @@ public sealed class SyncEngine
     /// <summary>Owner uid discovered while registering the device (null while unpaired).</summary>
     public string? OwnerUid => _registrar?.OwnerUid;
 
+    /// <summary>
+    /// True while the .info/connected stream last reported connectivity (or it flipped
+    /// positive and no negative report arrived since). Reflects real SSE stream health
+    /// for the heartbeat's sync/runtime write; false before the first connect event.
+    /// </summary>
+    public bool IsStreamConnected => Volatile.Read(ref _streamConnected) == 1;
+
     /// <summary>Fired when a VALID snapshot should be enforced; the host then calls NotifyEnforcementAppliedAsync.</summary>
     public event Action<ControlSnapshotV2>? ControlApplied;
 
     /// <summary>Fired with "revisionId: reason" when control is malformed or was removed; last valid stays enforced.</summary>
     public event Action<string>? ControlRejected;
+
+    /// <summary>Fired with the path + exception when one of the engine's SSE streams errors; reconnection is internal.</summary>
+    public event Action<string, Exception>? StreamError;
 
     /// <summary>Raw JSON of the pairRequests node (value-event semantics).</summary>
     public event Action<string>? PairRequestReceived;
@@ -339,446 +350,6 @@ public sealed class SyncEngine
         return _time.GetUtcNow().ToUnixTimeMilliseconds() + Volatile.Read(ref _serverOffsetMs);
     }
 
-    // ------------------------------------------------------ local dashboard write
-
-    /// <summary>
-    /// Writes a parent-style control/v2 change on behalf of the local web dashboard.
-    /// Deep-merges <paramref name="patchJson"/> into the current control, stamps a fresh
-    /// revisionId/updatedAt/updatedBy (this device's uid — allowed by the relaxed rule), validates
-    /// via the same ControlProtocol.Parse used for incoming control, then PUTs the whole node.
-    /// Echo/apply flows back through the normal SSE path.
-    /// </summary>
-    public async Task<(bool Ok, string? Error, string? RevisionId)> WriteControlV2Async(string? patchJson, CancellationToken ct)
-    {
-        string? baseRaw;
-        lock (_gate)
-        {
-            baseRaw = _currentControlRaw ?? _secrets.Get(SnapshotSecretKey);
-        }
-
-        return await WriteControlV2WithRetryAsync(
-            _deviceId,
-            _firebase,
-            patchJson,
-            baseRaw,
-            maxAttempts: 3,
-            onWritten: stored =>
-            {
-                lock (_gate)
-                {
-                    _currentControlRaw = stored;
-                }
-            },
-            ct).ConfigureAwait(false);
-    }
-
-    // ------------------------------------------------------ owner console (parent)
-
-    private IFirebaseClient? _ownerClient;
-
-    /// <summary>Plugs in the owner-scoped Firebase client used by the parent console to
-    /// read/write any device under the signed-in parent account.</summary>
-    public void SetOwnerClient(IFirebaseClient ownerClient)
-    {
-        _ownerClient = ownerClient ?? throw new ArgumentNullException(nameof(ownerClient));
-    }
-
-    /// <summary>The owner client, or null if the parent console has not signed in.</summary>
-    public IFirebaseClient? OwnerClient => _ownerClient;
-
-    private IFirebaseClient RequireOwner()
-    {
-        if (_ownerClient is null)
-        {
-            throw new InvalidOperationException("Owner client is not configured.");
-        }
-
-        return _ownerClient;
-    }
-
-    /// <summary>Reads a raw JSON node as the owner; returns null on any failure (e.g. not signed in).</summary>
-    private async Task<string?> ReadNodeAsync(string path, CancellationToken ct)
-    {
-        return await ReadNodeWithClientAsync(RequireOwner(), path, ct).ConfigureAwait(false);
-    }
-
-    private static async Task<string?> ReadNodeWithClientAsync(IFirebaseClient client, string path, CancellationToken ct)
-    {
-        try
-        {
-            return await client.GetAsync(path, ct).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    public Task<string?> ReadDeviceListAsync(string ownerUid, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.UserDevices(ownerUid), ct);
-
-    public Task<string?> ReadDeviceListEntryAsync(string ownerUid, string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.UserDevice(ownerUid, deviceId), ct);
-
-    public Task<string?> ReadDeviceMetaAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceMeta(deviceId), ct);
-
-    public Task<string?> ReadDeviceAppsStateAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceStateApps(deviceId), ct);
-
-    /// <summary>Reads a child device's full installed-app inventory (devices/{id}/apps, uploaded by its agent).</summary>
-    public Task<string?> ReadDeviceInventoryAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceApps(deviceId), ct);
-
-    /// <summary>Reads a child device's sync/applied acknowledgement (revisionId/status/appliedAt).</summary>
-    public Task<string?> ReadDeviceSyncAppliedAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceSyncApplied(deviceId), ct);
-
-    /// <summary>Reads a child device's pending/total unlock requests (raw node).</summary>
-    public Task<string?> ReadUnlockRequestsAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceUnlockRequests(deviceId), ct);
-
-    /// <summary>Reads a child device's tamper events (raw node, last events kept by the device).</summary>
-    public Task<string?> ReadTamperEventsAsync(string deviceId, CancellationToken ct)
-        => ReadNodeAsync(FirebasePaths.DeviceTamperEvents(deviceId), ct);
-
-    /// <summary>
-    /// Sends a command to a child device as the signed-in parent (rescanApps, resetToday,
-    /// unpair, openSetup). Mirrors the phone's sendCommand; the device's command loop picks
-    /// it up and the rules allow the owner to create pending commands.
-    /// </summary>
-    public async Task<(bool Ok, string? Error)> SendCommandForDeviceAsync(string deviceId, string type, string? packageName, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return (false, "deviceId is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(type))
-        {
-            return (false, "type is required.");
-        }
-
-        var client = RequireOwner();
-        var commandId = Guid.NewGuid().ToString("N");
-        var payload = new JsonObject
-        {
-            ["type"] = type,
-            ["requestedBy"] = client.Uid,
-            ["createdAt"] = ServerTimestamp(),
-            ["ttlMs"] = PolicyConstants.CommandTtlMs(type),
-            ["status"] = PolicyConstants.COMMAND_PENDING,
-        };
-        if (!string.IsNullOrWhiteSpace(packageName))
-        {
-            payload["packageName"] = packageName;
-        }
-
-        try
-        {
-            await client.PutAsync(FirebasePaths.DeviceCommands(deviceId) + "/" + commandId, payload.ToJsonString(), ct).ConfigureAwait(false);
-            return (true, null);
-        }
-        catch (Exception ex)
-        {
-            return (false, ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// Sets (or changes) a child device's PIN as the parent. The PIN hash is written to both
-    /// control/v2/pin (via the conflict-aware control write, which stamps a fresh revision so
-    /// the rules' revisionId-change check passes) and security/pin (owner-writable directly).
-    /// </summary>
-    public async Task<(bool Ok, string? Error)> SetPinForDeviceAsync(string deviceId, string pin, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return (false, "deviceId is required.");
-        }
-
-        if (pin is null || pin.Length != PolicyConstants.PIN_LENGTH || !pin.All(static c => c is >= '0' and <= '9'))
-        {
-            return (false, "PIN must be exactly 6 digits.");
-        }
-
-        var client = RequireOwner();
-        var created = PinHasher.Create(pin);
-        var pinNode = new JsonObject
-        {
-            ["salt"] = created.Salt,
-            ["hash"] = created.Hash,
-            ["version"] = PinHasher.CURRENT_VERSION,
-            ["algorithm"] = PinHasher.ALGORITHM,
-            ["iterations"] = PinHasher.ITERATIONS,
-            ["updatedAt"] = ServerTimestamp(),
-            ["updatedBy"] = client.Uid,
-        };
-
-        // control/v2/pin must ride a fresh revision (rules require revisionId to change).
-        var pinPatch = new JsonObject
-        {
-            ["pin"] = pinNode.DeepClone(),
-        };
-        var (ok, error, _) = await WriteControlV2ForDeviceAsync(deviceId, pinPatch.ToJsonString(), ct).ConfigureAwait(false);
-        if (!ok)
-        {
-            return (ok, error);
-        }
-
-        // Mirror to security/pin for the phone's legacy security view. control/v2 is
-        // authoritative (the device reads the PIN from its synced snapshot), so a
-        // mirror failure must not report the PIN as unset.
-        try
-        {
-            await client.PatchAsync(FirebasePaths.DeviceSecurityPin(deviceId), pinNode.ToJsonString(), ct).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // non-fatal: the authoritative control/v2 pin is already written
-        }
-
-        return (true, null);
-    }
-
-    /// <summary>
-    /// Responds to a child device's pending unlock request as the parent: approveOneVisit,
-    /// approve15, approve30 (timed 15/30 min per the rules) or deny. Rule-compliant: only
-    /// updates an existing pending request, preserving its immutable fields.
-    /// </summary>
-    public async Task<(bool Ok, string? Error)> RespondUnlockRequestAsync(string deviceId, string requestId, string action, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return (false, "deviceId is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(requestId))
-        {
-            return (false, "requestId is required.");
-        }
-
-        var client = RequireOwner();
-        long? approvalDurationMs = null;
-        string? approvalType = null;
-        string status;
-        switch (action)
-        {
-            case "approveOneVisit":
-                status = PolicyConstants.UNLOCK_APPROVED;
-                approvalType = PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT;
-                break;
-            case "approve15":
-                status = PolicyConstants.UNLOCK_APPROVED;
-                approvalType = PolicyConstants.UNLOCK_APPROVAL_TIMED;
-                approvalDurationMs = PolicyConstants.UNLOCK_15_MINUTES_MS;
-                break;
-            case "approve30":
-                status = PolicyConstants.UNLOCK_APPROVED;
-                approvalType = PolicyConstants.UNLOCK_APPROVAL_TIMED;
-                approvalDurationMs = PolicyConstants.UNLOCK_30_MINUTES_MS;
-                break;
-            case "deny":
-                status = PolicyConstants.UNLOCK_DENIED;
-                break;
-            default:
-                return (false, "Unknown action.");
-        }
-
-        // Pre-check the request state so a stale action gets a friendly message
-        // instead of a raw Firebase permission failure (the owner rule only allows
-        // writes while the request is still pending).
-        var currentRaw = await ReadNodeAsync(FirebasePaths.DeviceUnlockRequest(deviceId, requestId), ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(currentRaw) || currentRaw!.Trim() == "null")
-        {
-            return (false, "Unlock request not found (it may have expired and been cleaned up).");
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(currentRaw);
-            var currentStatus = ReadString(doc.RootElement, "status");
-            if (!string.Equals(currentStatus, PolicyConstants.UNLOCK_PENDING, StringComparison.Ordinal))
-            {
-                return (false, "This request is no longer pending (status: " + (currentStatus ?? "unknown") + ").");
-            }
-        }
-        catch (JsonException)
-        {
-            // unreadable node: fall through and let the rules reject the write
-        }
-
-        var patch = new JsonObject
-        {
-            ["status"] = status,
-            ["updatedAt"] = ServerTimestamp(),
-            ["updatedBy"] = client.Uid,
-        };
-        if (approvalType != null)
-        {
-            patch["approvalType"] = approvalType;
-        }
-
-        if (approvalDurationMs != null)
-        {
-            patch["approvalDurationMs"] = approvalDurationMs;
-        }
-
-        try
-        {
-            await client.PatchAsync(FirebasePaths.DeviceUnlockRequest(deviceId, requestId), patch.ToJsonString(), ct).ConfigureAwait(false);
-            return (true, null);
-        }
-        catch (Exception ex)
-        {
-            return (false, ex.Message);
-        }
-    }
-
-    /// <summary>Reads a child device's control/v2 and parses it to a snapshot.</summary>
-    public async Task<(ControlSnapshotV2? Snapshot, string? Raw)> ReadControlV2Async(string deviceId, CancellationToken ct)
-    {
-        var raw = await ReadNodeAsync(FirebasePaths.DeviceControlV2(deviceId), ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(raw) || string.Equals(raw!.Trim(), "null", StringComparison.Ordinal))
-        {
-            return (null, null);
-        }
-
-        var result = ControlProtocol.Parse(raw);
-        return (result.Status == ControlParseStatus.Valid ? result.Snapshot : null, raw);
-    }
-
-    /// <summary>
-    /// Writes a control/v2 change to an arbitrary child device as the signed-in parent.
-    /// Deep-merges <paramref name="patchJson"/> into that device's current control, stamps a
-    /// fresh revision (updatedBy = owner uid, allowed by the owner rule), validates, then PUTs.
-    /// </summary>
-    public async Task<(bool Ok, string? Error, string? RevisionId)> WriteControlV2ForDeviceAsync(string deviceId, string? patchJson, CancellationToken ct)
-    {
-        var client = RequireOwner();
-        return await WriteControlV2WithRetryAsync(
-            deviceId, client, patchJson,
-            initialRaw: null, maxAttempts: 3, onWritten: null, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Shared core: merges the patch into the current control, stamps, validates, PUTs, then
-    /// verifies the write by re-reading the stored revisionId. If a concurrent writer overwrote
-    /// our PUT (revisionId doesn't match), re-reads the winner, re-merges the same patch on top,
-    /// and retries (up to <paramref name="maxAttempts"/>). This is the strongest achievable
-    /// conflict resolution with REST (RTDB has no transactions). The owner and local dashboard
-    /// paths use this — the phone uses the same read-merge-PUT approach.
-    /// </summary>
-    private async Task<(bool Ok, string? Error, string? RevisionId)> WriteControlV2WithRetryAsync(
-        string deviceId,
-        IFirebaseClient client,
-        string? patchJson,
-        string? initialRaw,
-        int maxAttempts,
-        Action<string>? onWritten,
-        CancellationToken ct)
-    {
-        JsonObject? patch = null;
-        if (!string.IsNullOrWhiteSpace(patchJson))
-        {
-            try
-            {
-                patch = JsonNode.Parse(patchJson) as JsonObject;
-            }
-            catch (JsonException)
-            {
-                return (false, "Invalid patch JSON", null);
-            }
-
-            if (patch == null)
-            {
-                return (false, "Invalid patch JSON", null);
-            }
-        }
-
-        var currentRaw = initialRaw;
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            // On retry, re-read the live control so we merge onto the latest winner.
-            if (attempt > 0 || currentRaw == null)
-            {
-                currentRaw = await ReadNodeWithClientAsync(client, FirebasePaths.DeviceControlV2(deviceId), ct).ConfigureAwait(false);
-            }
-
-            JsonObject root;
-            if (string.IsNullOrWhiteSpace(currentRaw) || string.Equals(currentRaw!.Trim(), "null", StringComparison.Ordinal))
-            {
-                root = EmptyControlRoot();
-            }
-            else
-            {
-                try
-                {
-                    root = (JsonNode.Parse(currentRaw) as JsonObject) ?? EmptyControlRoot();
-                }
-                catch (JsonException)
-                {
-                    root = EmptyControlRoot();
-                }
-            }
-
-            if (patch != null)
-            {
-                MergeInto(root, patch);
-            }
-
-            // Guarantee the fields the firebase .validate demands on every control/v2 write.
-            var revisionId = NewRevisionId();
-            root["schemaVersion"] = PolicyConstants.SYNC_PROTOCOL_VERSION;
-            root["revisionId"] = revisionId;
-            root["updatedAt"] = ServerTimestamp();
-            root["updatedBy"] = client.Uid;
-            if (root["safeMode"] is not JsonObject safeMode || !safeMode.ContainsKey("enabled") || !safeMode.ContainsKey("until"))
-            {
-                root["safeMode"] = new JsonObject { ["enabled"] = false, ["until"] = 0 };
-            }
-
-            var json = root.ToJsonString();
-            var parsed = ControlProtocol.Parse(json);
-            if (parsed.Status != ControlParseStatus.Valid || parsed.Snapshot == null)
-            {
-                return (false, parsed.Error ?? "Invalid merged control snapshot (rejected by parser)", null);
-            }
-
-            // A merged snapshot can validate while the lenient parser silently DROPPED a
-            // patched node (unknown activeMode id, blank mode name, key/id mismatch). The
-            // PUT below would then succeed with the change missing — report that to the
-            // writer instead of returning ok for a change that never landed.
-            var dropped = FindSilentlyDroppedNode(root, parsed.Snapshot);
-            if (dropped != null)
-            {
-                return (false, dropped, null);
-            }
-
-            try
-            {
-                await client.PutAsync(FirebasePaths.DeviceControlV2(deviceId), json, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                return (false, ex.Message, null);
-            }
-
-            // Verify the write stuck: the stored revisionId must be ours. If a concurrent
-            // writer overwrote our PUT, we'll re-merge our patch on top of the winner.
-            var stored = await ReadNodeWithClientAsync(client, FirebasePaths.DeviceControlV2(deviceId), ct).ConfigureAwait(false);
-            if (stored != null && ExtractRevisionId(stored) == revisionId)
-            {
-                onWritten?.Invoke(stored);
-                return (true, null, revisionId);
-            }
-
-            // A concurrent writer won or the verify read failed; retry.
-            currentRaw = stored;
-        }
-
-        return (false, "Control write conflicted with another writer. Refresh and try again.", null);
-    }
 
     /// <summary>
     /// Returns an error when the parsed snapshot lost a node the merged root contains
@@ -814,75 +385,6 @@ public sealed class SyncEngine
         return null;
     }
 
-    /// <summary>
-    /// Approves a pending unlock request on a remote child device as the signed-in parent.
-    /// The Firebase rules only allow the owner to update an EXISTING pending request
-    /// (data.exists() && status == "pending"); creating one is reserved for the device's
-    /// tvUid (its "Ask parent" flow). So this method finds the child's pending request
-    /// for the app and PATCHes it to approved, preserving the immutable request fields —
-    /// the same flow the phone parent app uses.
-    /// </summary>
-    public async Task<(bool Ok, string? Error)> RequestUnlockForDeviceAsync(string deviceId, string appKey, string type, long? durationMs, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(appKey))
-        {
-            return (false, "appKey is required");
-        }
-
-        var client = RequireOwner();
-
-        // The dashboard sends the RAW package name (resolved by key in the UI), and the
-        // device's pending requests carry the raw name too — match directly. No decode
-        // heuristic: PackageKeys.Decode silently mis-decodes dot-less package names
-        // ("Browser", "Calculator") into garbage and would fail the approval.
-        var packageName = appKey;
-
-        var isTimed = string.Equals(type, PolicyConstants.UNLOCK_APPROVAL_TIMED, StringComparison.OrdinalIgnoreCase);
-        long? approvalDurationMs = null;
-        if (isTimed)
-        {
-            // The rules only allow 900000 or 1800000 ms (15/30 minutes).
-            if (durationMs is not (PolicyConstants.UNLOCK_15_MINUTES_MS or PolicyConstants.UNLOCK_30_MINUTES_MS))
-            {
-                return (false, "Timed unlocks only support 15 or 30 minutes.");
-            }
-
-            approvalDurationMs = durationMs;
-        }
-
-        var raw = await ReadNodeAsync(FirebasePaths.DeviceUnlockRequests(deviceId), ct).ConfigureAwait(false);
-        var requestId = FindPendingRequestId(raw, packageName, ServerNowMs());
-        if (requestId == null)
-        {
-            return (false, "No pending unlock request for this app. Ask the child to request an unlock first.");
-        }
-
-        var patch = new JsonObject
-        {
-            ["status"] = PolicyConstants.UNLOCK_APPROVED,
-            ["updatedAt"] = ServerTimestamp(),
-            ["updatedBy"] = client.Uid,
-        };
-        if (isTimed)
-        {
-            patch["approvalType"] = PolicyConstants.UNLOCK_APPROVAL_TIMED;
-            patch["approvalDurationMs"] = approvalDurationMs;
-        }
-        else
-        {
-            patch["approvalType"] = PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT;
-        }
-
-        try
-        {
-            await client.PatchAsync(FirebasePaths.DeviceUnlockRequest(deviceId, requestId), patch.ToJsonString(), ct).ConfigureAwait(false);
-            return (true, null);
-        }
-        catch (Exception ex)
-        {
-            return (false, ex.Message);
-        }
-    }
 
     /// <summary>Finds the id of a non-expired pending unlock request for the given raw package name.</summary>
     private static string? FindPendingRequestId(string? raw, string packageName, long nowMs)
@@ -978,7 +480,7 @@ public sealed class SyncEngine
             var stream = _firebase.StreamAsync(
                 path,
                 onData,
-                error => { /* reconnection is handled inside the client */ },
+                error => StreamError?.Invoke(path, error),
                 ct);
             lock (_gate)
             {
@@ -1069,6 +571,7 @@ public sealed class SyncEngine
         if (connected)
         {
             _lastStreamHealthyUtc = _time.GetUtcNow().UtcDateTime;
+            Volatile.Write(ref _streamConnected, 1);
             lock (_gate)
             {
                 SessionId = Guid.NewGuid().ToString("D");
@@ -1079,6 +582,7 @@ public sealed class SyncEngine
         }
         else
         {
+            Volatile.Write(ref _streamConnected, 0);
             ConnectionChanged?.Invoke(false);
             _ = WriteRuntimeAsync(connected: false);
         }

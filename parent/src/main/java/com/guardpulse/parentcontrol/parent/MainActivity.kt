@@ -288,7 +288,8 @@ private fun ParentDashboard(
                         val label = devices.firstOrNull { it.deviceId == deviceId }?.label ?: deviceId
                         confirm(
                             "Remove paired laptop?",
-                            "It will disappear immediately, even if the laptop is offline.",
+                            "The removal completes once the laptop comes back online and confirms. "
+                                + "Until then it stays listed as \u0022Waiting for laptop\u0022 and keeps its current protections.",
                             "Remove",
                             true
                         ) { onRemoveDevice(deviceId) }

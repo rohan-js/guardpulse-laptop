@@ -275,9 +275,25 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
                 refreshToken = _refreshToken ?? _secrets.Get(_refreshTokenSecretKey) ?? (_isOwner ? null : _config.RefreshToken);
             }
 
-            if (refreshToken != null && await TryRefreshAsync(refreshToken, ct).ConfigureAwait(false))
+            if (refreshToken != null)
             {
-                return;
+                var refreshed = await TryRefreshAsync(refreshToken, ct).ConfigureAwait(false);
+                if (refreshed == RefreshResult.Refreshed)
+                {
+                    return;
+                }
+                if (refreshed == RefreshResult.RetryableFailure)
+                {
+                    // Transient refresh failure (5xx/429/network). Falling through to
+                    // sign-up here used to mint a brand-new anonymous identity and
+                    // overwrite the stored refresh token — permanently orphaning the
+                    // paired device (the parent saw an unpaired laptop). Fail the call;
+                    // the caller retries and the identity survives.
+                    throw new HttpRequestException(
+                        "Firebase token refresh failed transiently; preserving device identity.");
+                }
+                // RefreshResult.InvalidToken: definitive rejection (invalid/expired
+                // refresh token) — signing up for a fresh identity is correct.
             }
 
             if (_isOwner)
@@ -303,7 +319,14 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
         }
     }
 
-    private async Task<bool> TryRefreshAsync(string refreshToken, CancellationToken ct)
+    private enum RefreshResult
+    {
+        Refreshed,
+        InvalidToken,
+        RetryableFailure,
+    }
+
+    private async Task<RefreshResult> TryRefreshAsync(string refreshToken, CancellationToken ct)
     {
         var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -319,11 +342,25 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
             Content = content,
         };
 
-        using var response = await Http.SendAsync(request, ct).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        HttpResponseMessage response;
+        string body;
+        try
+        {
+            response = await Http.SendAsync(request, ct).ConfigureAwait(false);
+            body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // Network failure: retryable, never an identity reset.
+            return RefreshResult.RetryableFailure;
+        }
+
         if (!response.IsSuccessStatusCode)
         {
-            return false; // invalid/expired refresh token (or transient failure -> signUp will also fail)
+            // Definitive rejection: invalid/expired/stolen refresh token (400/403 with
+            // INVALID_REFRESH_TOKEN family). 5xx and 429 are transient.
+            var transient = (int)response.StatusCode >= 500 || (int)response.StatusCode == 429;
+            return transient ? RefreshResult.RetryableFailure : RefreshResult.InvalidToken;
         }
 
         using var document = JsonDocument.Parse(body);
@@ -334,11 +371,11 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
         var userId = GetString(root, "user_id");
         if (idToken == null || newRefreshToken == null)
         {
-            return false;
+            return RefreshResult.InvalidToken;
         }
 
         StoreToken(userId, idToken, newRefreshToken, expiresIn);
-        return true;
+        return RefreshResult.Refreshed;
     }
 
     private async Task SignUpAsync(CancellationToken ct)

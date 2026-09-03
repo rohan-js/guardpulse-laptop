@@ -277,19 +277,49 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
+    // Devices the parent asked to remove whose laptop has not confirmed yet
+    // (meta.ownerUid still set). Kept in prefs so the state survives restarts.
+    private val unpairPendingPrefs by lazy {
+        application.getSharedPreferences("unpair_pending", android.content.Context.MODE_PRIVATE)
+    }
+
+    private fun unpairPendingIds(): Set<String> =
+        unpairPendingPrefs.getStringSet("ids", emptySet())?.toSet().orEmpty()
+
+    private fun markUnpairPending(deviceId: String) {
+        unpairPendingPrefs.edit().putStringSet(
+            "ids",
+            unpairPendingIds() + deviceId
+        ).apply()
+    }
+
+    private fun clearUnpairPending(deviceId: String) {
+        unpairPendingPrefs.edit().putStringSet(
+            "ids",
+            unpairPendingIds() - deviceId
+        ).apply()
+    }
+
     fun removePairedDevice(deviceId: String) {
         val wasSelected = state.value.selectedDeviceId == deviceId
-        setState { it.copy(devices = it.devices.filterNot { d -> d.deviceId == deviceId }) }
+        markUnpairPending(deviceId)
+        // Keep the device visible but flag it: the unpair only completes when the
+        // laptop confirms (meta.ownerUid cleared) - otherwise re-pairing is blocked
+        // by the pair-request rule and the kid keeps the old protections.
+        setState {
+            it.copy(
+                devices = it.devices.map { d ->
+                    if (d.deviceId == deviceId) d.copy(label = d.label + " (waiting for laptop)") else d
+                }
+            )
+        }
         if (wasSelected) {
             selectionPrefs.edit().remove("selectedDeviceId").apply()
             syncRepository?.clearSelectedDevice()
         }
         writer?.removePairedDevice(
             deviceId,
-            onSuccess = {
-                if (wasSelected) clearSelectedDevice()
-                setMessage("Device removed")
-            },
+            onSuccess = { setMessage("Remove requested; completes when the laptop confirms") },
             onError = { msg ->
                 syncRepository?.refresh()
                 setMessage(msg)
@@ -336,7 +366,22 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         syncRepository?.observeDevices(
             uid,
             onDevices = { devices ->
-                setState { current -> current.copy(devices = devices, loadingDevices = false) }
+                // A device the parent removed disappears from users/{uid}/devices
+                // immediately; while meta.ownerUid is still set (laptop has not
+                // confirmed), re-attach the pending marker so the UI stays truthful.
+                val pending = unpairPendingIds()
+                val reconciled = devices.map { d ->
+                    if (d.deviceId in pending) d.copy(label = d.label + " (waiting for laptop)") else d
+                }
+                // A pending id that vanished from the mirror entirely AND whose device
+                // is gone means the laptop confirmed (its UnpairAsync deletes the mirror
+                // entry too) - clear the marker.
+                pending.forEach { id ->
+                    if (devices.none { it.deviceId == id }) {
+                        clearUnpairPending(id)
+                    }
+                }
+                setState { current -> current.copy(devices = reconciled, loadingDevices = false) }
                 val selected = preferredDeviceId(
                     devices = devices,
                     currentId = state.value.selectedDeviceId,

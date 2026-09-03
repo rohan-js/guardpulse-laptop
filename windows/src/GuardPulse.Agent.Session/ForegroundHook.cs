@@ -8,11 +8,12 @@ namespace GuardPulse.Agent.Session;
 
 /// <summary>
 /// Reports the foreground process to the service: instant WinEvent hook
-/// notifications plus a 3s GetForegroundWindow polling fallback. Bypass-tool
+/// notifications plus a 10s GetForegroundWindow polling fallback. Bypass-tool
 /// executables are mapped to their virtual app keys so the service never
 /// needs process details to decide on them. ForegroundChanged is always raised
 /// on the WPF dispatcher (the polling timer runs on a ThreadPool thread), so
-/// subscribers can touch UI state safely.
+/// subscribers can touch UI state safely — and synchronously, so the lock wall
+/// re-asserts before the WinEvent callback returns.
 /// </summary>
 public sealed class ForegroundHook : IDisposable
 {
@@ -78,25 +79,39 @@ public sealed class ForegroundHook : IDisposable
                 return;
             }
 
+            var exePath = GetProcessImagePath(pid);
+            var windowTitle = GetWindowTitle(hwnd);
+
             // A dead process's window can linger as "foreground" and would pin
-            // tracking forever; skip it — the next live foreground reports.
+            // tracking forever — but only when we cannot identify the window at
+            // all. When the PID query fails or the process has exited, still
+            // report the foreground from the exe/window-title fallback instead
+            // of silently dropping it: the next live foreground corrects any
+            // brief mis-attribution.
+            var alive = true;
             try
             {
                 using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-                if (process.HasExited)
-                {
-                    return;
-                }
+                alive = !process.HasExited;
             }
             catch (ArgumentException)
             {
-                return; // pid already recycled away
+                alive = false; // pid already recycled away
             }
 
-            var exePath = GetProcessImagePath(pid);
             if (string.IsNullOrEmpty(exePath))
             {
-                ReportOwnWindow();
+                if (alive || string.IsNullOrEmpty(windowTitle))
+                {
+                    // Live process we cannot query (or nothing to report): keep
+                    // the old own-window marker behavior.
+                    ReportOwnWindow();
+                    return;
+                }
+
+                // Dead pid, no image path: the window title is the only identity
+                // left — report it so tracking keeps flowing.
+                Publish(windowTitle.ToLowerInvariant(), "", windowTitle);
                 return;
             }
 
@@ -107,24 +122,30 @@ public sealed class ForegroundHook : IDisposable
                 return;
             }
 
-            var windowTitle = GetWindowTitle(hwnd);
             var bypass = MapBypassRow(exeName, windowTitle);
             var appKey = bypass ?? exePath.ToLowerInvariant();
-            lock (_stateGate)
-            {
-                if (appKey == _lastAppKey) return;
-                _lastAppKey = appKey;
-            }
-
-            _pipe.SendForeground(appKey, exePath, windowTitle);
-            // Subscribers touch WPF state; the polling timer fires on a ThreadPool
-            // thread, so always deliver through the UI dispatcher.
-            _dispatcher.BeginInvoke(() => ForegroundChanged?.Invoke(appKey));
+            Publish(appKey, exePath, windowTitle);
         }
         catch (Exception)
         {
             // transient failures are fine; poll will retry
         }
+    }
+
+    /// <summary>Dedupes, sends to the service, and raises <see cref="ForegroundChanged"/>.</summary>
+    private void Publish(string appKey, string exePath, string? windowTitle)
+    {
+        lock (_stateGate)
+        {
+            if (appKey == _lastAppKey) return;
+            _lastAppKey = appKey;
+        }
+
+        _pipe.SendForeground(appKey, exePath, windowTitle);
+        // Subscribers touch WPF state; deliver synchronously through the UI
+        // dispatcher (the WinEvent callback runs on a dedicated thread — Invoke
+        // makes the wall come forward before the callback returns).
+        _dispatcher.Invoke(() => ForegroundChanged?.Invoke(appKey));
     }
 
     private void ReportOwnWindow()

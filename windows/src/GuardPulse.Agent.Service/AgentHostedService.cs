@@ -42,6 +42,16 @@ public sealed class AgentHostedService(
     private static readonly TimeSpan DeadManGrace = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ActivityRetention = TimeSpan.FromDays(30);
     private static readonly TimeSpan StandardCommandTtl = TimeSpan.FromMinutes(5);
+    // Retention window for devices/{id}/unlockRequests (deleted during handling + sweep).
+    private static readonly TimeSpan UnlockRequestRetention = TimeSpan.FromDays(7);
+    // RTDB retention: tamperEvents 30 days, activity history 7 days (sweep at startup + 24h).
+    private static readonly TimeSpan TamperEventRetention = TimeSpan.FromDays(30);
+    private static readonly TimeSpan ActivityHistoryRetention = TimeSpan.FromDays(7);
+    // Field caps matching the RTDB rules; oversized values are silently rejected.
+    private const int ActivityLabelMax = 160;
+    private const int BrowserNameMax = 100;
+    private const int BrowserTabMax = 300;
+    private const int BrowserUrlMax = 2048;
 
     private static readonly Dictionary<string, string> BypassLabels = new(StringComparer.Ordinal)
     {
@@ -58,7 +68,16 @@ public sealed class AgentHostedService(
     private readonly object _gate = new(); // guards foreground/overlay state
     private readonly object _labelLock = new();
     private readonly Dictionary<string, string> _labelByAppKey = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _processedCommands = new(StringComparer.Ordinal);
+    // Guards the SSE-vs-poll dedupe collections (_processedCommands,
+    // _handledUnlockRequests, _lastUploadedAppStates): both the stream callbacks and
+    // the 5s boundary polls mutate them concurrently.
+    private readonly object _dedupeGate = new();
+    // Most recently processed command ids, oldest first; trimmed to the newest
+    // ProcessedCommandsKeep (ordered trim keeps restart-hydration replays deduped
+    // where a Clear() would re-run the evicted commands).
+    private readonly List<string> _processedCommands = new();
+    private const int ProcessedCommandsMax = 1000;
+    private const int ProcessedCommandsKeep = 500;
     private readonly HashSet<string> _handledUnlockRequests = new(StringComparer.Ordinal);
     private const int HandledUnlockRequestsMax = 1000;
 
@@ -68,7 +87,6 @@ public sealed class AgentHostedService(
     private AgentConfig _config = null!;
     private ISecretStore _secrets = null!;
     private IFirebaseClient _firebase = null!;
-    private RtdbFirebaseClient? _ownerClient;
     private SyncEngine _syncEngine = null!;
     private UsageLedger _ledger = null!;
     private ActivityLog _activity = null!;
@@ -164,6 +182,9 @@ public sealed class AgentHostedService(
             // Start unlock/pair streams now that _firebase/_deviceId are wired.
             SubscribeToRealtimeStreams();
 
+            // RTDB retention sweep at startup; the interval loop below repeats it daily.
+            _ = RunSafeAsync("rtdb-prune", PruneRtdbNodesAsync);
+
             await Task.WhenAll(
                 IntervalLoopAsync("heartbeat", TimeSpan.FromMilliseconds(PolicyConstants.HEARTBEAT_INTERVAL_MS), HeartbeatAsync),
                 IntervalLoopAsync("state-upload", StateUploadInterval, () => UploadStatesAsync(false)),
@@ -174,7 +195,8 @@ public sealed class AgentHostedService(
                 IntervalLoopAsync("boundary", TimeSpan.FromSeconds(5), BoundaryTickAsync),
                 // 10s browser roll-up: accrue active-domain time and refresh state/browser.
                 IntervalLoopAsync("browser-rollup", TimeSpan.FromSeconds(10), BrowserRollupTickAsync),
-                IntervalLoopAsync("dead-man", DeadManCheckInterval, () => { DeadManCheck(); return Task.CompletedTask; }));
+                IntervalLoopAsync("dead-man", DeadManCheckInterval, () => { DeadManCheck(); return Task.CompletedTask; }),
+                IntervalLoopAsync("rtdb-prune", TimeSpan.FromDays(1), PruneRtdbNodesAsync));
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -384,13 +406,7 @@ public sealed class AgentHostedService(
         WriteDeviceJson();
 
         _firebase = new RtdbFirebaseClient(_config, _secrets);
-        // Owner (parent) client: signs in with the parent's email+password and can act
-        // on every device under that account. Its refresh token persists in the same
-        // DPAPI secret store as the device token, so the console stays signed in.
-        _ownerClient = new RtdbFirebaseClient(_config, _secrets, isOwner: true,
-            refreshTokenSecretKey: RtdbFirebaseClient.OwnerRefreshTokenSecretKey);
         _syncEngine = new SyncEngine(_firebase, _secrets, _deviceId, _time);
-        _syncEngine.SetOwnerClient(_ownerClient);
         _ledger = new UsageLedger(_stateDir, _time);
         _activity = new ActivityLog(_stateDir, _time);
         _enforcement = new EnforcementEngine(_time);
@@ -412,7 +428,7 @@ public sealed class AgentHostedService(
             _agentAppKey = agentExePath.ToLowerInvariant();
         }
 
-        _pinRetry = new PinRetryGate(_time);
+        _pinRetry = new PinRetryGate(_time, Path.Combine(_stateDir, "pin-retry.json"));
         // Separate gate from the lock-overlay PIN path: HTTP brute-force attempts must
         // not lock the child out of the overlay (and vice versa), while both stay bounded.
         _dashboardLoginRetry = new PinRetryGate(_time);
@@ -441,8 +457,21 @@ public sealed class AgentHostedService(
     {
         var (deviceId, secret, code) = _pairing.GetOrCreate();
         _deviceId = deviceId;
-        var json = JsonSerializer.Serialize(new DeviceIdentityJson(deviceId, secret, code), JsonOpts);
-        File.WriteAllText(Path.Combine(_stateDir, "device.json"), json);
+        // device.json is granted to Users (the child account can read it), so it must
+        // NEVER hold the pairing secret — only the stable deviceId and the short-lived
+        // 6-digit manual code. The QR secret reaches the setup window over the pipe
+        // ("deviceInfo" request) straight from the secret store.
+        var json = JsonSerializer.Serialize(new DeviceIdentityJson(deviceId, code), JsonOpts);
+        var path = Path.Combine(_stateDir, "device.json");
+        var created = !File.Exists(path);
+        File.WriteAllText(path, json);
+        if (created)
+        {
+            // Fresh-install ordering: SetupStateDirectory's device.json icacls grant
+            // runs before the file exists; re-grant right after we just created it.
+            RunIcacls($"\"{path}\" /grant \"{SidUsers}:R\"", "device-json-users");
+        }
+
         _lastPairingSecret = secret;
         _lastPairingCode = code;
     }
@@ -476,6 +505,10 @@ public sealed class AgentHostedService(
         _syncEngine.ControlApplied += snapshot => _ = HandleControlAppliedAsync(snapshot);
         _syncEngine.ControlRejected += reason => _logger.LogWarning("Control revision rejected: {Reason}", reason);
         _syncEngine.CommandReceived += raw => _ = HandleCommandsStreamAsync(raw);
+        // The SSE client reconnects on its own; surface the errors so stream outages
+        // are diagnosable from the service log instead of being swallowed.
+        _syncEngine.StreamError += (path, error) =>
+            _logger.LogWarning(error, "Sync stream {Path} error (client will reconnect)", path);
 
         _pipeHost.ForegroundReceived += (appKey, exePath, windowTitle) =>
             RunSafe("foreground", () => OnForegroundReceived(appKey, exePath, windowTitle));
@@ -504,24 +537,23 @@ public sealed class AgentHostedService(
             _pipeHost.BroadcastPairedState(IsPaired);
         };
         _pipeHost.AdminStateReceived += (session, isAdmin) => RunSafe("admin-state", () => OnAdminStateReceived(session, isAdmin));
+        // Setup window pairing credentials: served from the secret store (PairingManager),
+        // NOT device.json — device.json is child-readable and must not carry the secret.
+        _pipeHost.DeviceInfoRequest += req =>
+        {
+            try
+            {
+                var (deviceId, secret, code) = _pairing.GetOrCreate();
+                return JsonSerializer.Serialize(
+                    new { t = "deviceInfo", req, deviceId, secret, code }, JsonOpts);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "deviceInfo request failed");
+                return null;
+            }
+        };
 
-        // Local web dashboard (browser page on the laptop): the device is allowed to
-        // write control/v2 (firebase rule) and the Session dashboard talks over the pipe.
-        _pipeHost.ControlGetHandler = BuildDashboardState;
-        _pipeHost.ControlLoginHandler = HandleDashboardLogin;
-        _pipeHost.ControlWriteHandler = HandleDashboardWrite;
-        _pipeHost.ControlUnlockHandler = HandleDashboardUnlock;
-
-        // Parent console (owner sign-in, device list, per-device control): the owner
-        // client acts as the parent for any device under the signed-in account.
-        _pipeHost.OwnerLoginHandler = HandleOwnerLogin;
-        _pipeHost.ListDevicesHandler = HandleListDevices;
-        _pipeHost.DeviceStateHandler = HandleDeviceState;
-        _pipeHost.DeviceWriteHandler = HandleDeviceWrite;
-        _pipeHost.DeviceUnlockHandler = HandleDeviceUnlock;
-        _pipeHost.DeviceCommandHandler = HandleDeviceCommand;
-        _pipeHost.DevicePinHandler = HandleDevicePin;
-        _pipeHost.DeviceUnlockRespondHandler = HandleDeviceUnlockRespond;
 
         _watchdog.TamperDetected += (type, message) => _ = RunSafeAsync("tamper-push", () => PushTamperEventAsync(type, message));
         _ledger.ClockTampered += jumpMs => _ = RunSafeAsync("clock-tamper-push", () =>
@@ -529,178 +561,18 @@ public sealed class AgentHostedService(
                 $"System clock jumped backwards by {jumpMs / 1000}s while usage was being tracked; usage preserved via monotonic clock."));
     }
 
-    // ----------------------------------------------------------------- dashboard
-    private const long DashboardInventoryMaxAgeMs = 5 * 60_000;
-    private List<InventoryApp>? _dashboardInventoryCache;
-    private long _dashboardInventoryAtMs;
-
-    private string BuildDashboardState(string req)
-    {
-        try
-        {
-            var snapshot = _syncEngine.LastValidSnapshot;
-            // The local console never sees pending unlock approvals (those belong to the
-            // parent surfaces — phone / remote console); everything else mirrors the
-            // remote DTO so the UI renders both scopes identically.
-            var syncStatus = snapshot != null && string.Equals(_syncEngine.LastAppliedRevision, snapshot.RevisionId, StringComparison.Ordinal)
-                ? PolicyConstants.SYNC_STATUS_APPLIED
-                : null;
-            return ComposeStateJson(req, snapshot, _deviceId, IsPaired, snapshot?.Pin is not null,
-                thisDevice: true, syncStatus: syncStatus,
-                enforcementMode: PolicyConstants.ENFORCEMENT_FALLBACK,
-                protectionHealthy: _pipeHost.ConnectedAgents > 0,
-                inventoryApps: DashboardInvApps());
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { t = "controlState", req, ok = false, error = ex.Message }, JsonOpts);
-        }
-    }
 
     /// <summary>Builds the controlState DTO shared by the local (this-laptop) and remote (parent
     /// console) views. <paramref name="thisDevice"/> controls whether the local app inventory and
     /// per-app ledger usage are included (only meaningful for this laptop).</summary>
-    private string ComposeStateJson(string req, ControlSnapshotV2? snapshot, string deviceId,
-        bool paired, bool pinConfigured, bool thisDevice, List<object?>? remoteUsage = null,
-        string? label = null, bool online = true, long lastSeen = 0,
-        string? syncStatus = null, long? syncAppliedAt = null, string? syncRevisionId = null,
-        List<object?>? pendingUnlocks = null, List<object?>? tamperEvents = null,
-        string? enforcementMode = null, bool? protectionHealthy = null, List<InvApp>? inventoryApps = null)
-    {
-        var state = ComposeStateDto(snapshot, deviceId, paired, pinConfigured, thisDevice, remoteUsage,
-            label, online, lastSeen, syncStatus, syncAppliedAt, syncRevisionId, pendingUnlocks, tamperEvents,
-            enforcementMode, protectionHealthy, inventoryApps);
-        return JsonSerializer.Serialize(new { t = "controlState", req, ok = true, state }, JsonOpts);
-    }
 
     /// <summary>Serializes just the state DTO (no envelope) — the device-state cache stores
     /// this shape so a cached hit can be re-wrapped with the caller's fresh req id.</summary>
-    private string ComposeStateDtoRaw(string deviceId, ControlSnapshotV2? snapshot,
-        bool paired, bool pinConfigured, bool thisDevice, List<object?>? remoteUsage,
-        string? label, bool online, long lastSeen,
-        string? syncStatus, long? syncAppliedAt, string? syncRevisionId,
-        List<object?>? pendingUnlocks, List<object?>? tamperEvents,
-        string? enforcementMode, bool? protectionHealthy, List<InvApp>? inventoryApps = null)
-    {
-        var state = ComposeStateDto(snapshot, deviceId, paired, pinConfigured, thisDevice, remoteUsage,
-            label, online, lastSeen, syncStatus, syncAppliedAt, syncRevisionId, pendingUnlocks, tamperEvents,
-            enforcementMode, protectionHealthy, inventoryApps);
-        return JsonSerializer.Serialize(state, JsonOpts);
-    }
-
-    private Dictionary<string, object?> ComposeStateDto(ControlSnapshotV2? snapshot, string deviceId,
-        bool paired, bool pinConfigured, bool thisDevice, List<object?>? remoteUsage,
-        string? label, bool online, long lastSeen,
-        string? syncStatus, long? syncAppliedAt, string? syncRevisionId,
-        List<object?>? pendingUnlocks, List<object?>? tamperEvents,
-        string? enforcementMode, bool? protectionHealthy, List<InvApp>? inventoryApps = null)
-    {
-        var apps = BuildAppsList(snapshot, inventoryApps);
-        var modes = BuildModesList(snapshot, out var activeId, out var activeName);
-        var usage = remoteUsage ?? BuildUsageList(snapshot);
-        var safe = snapshot?.SafeMode;
-        var state = new Dictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["deviceId"] = deviceId,
-            ["label"] = label ?? deviceId,
-            ["online"] = online,
-            ["lastSeen"] = lastSeen,
-            ["thisDevice"] = thisDevice,
-            ["paired"] = paired,
-            ["pinConfigured"] = pinConfigured,
-            ["apps"] = apps,
-            ["inventory"] = thisDevice ? DashboardInventory() : Array.Empty<object?>(),
-            ["modes"] = modes,
-            ["activeModeId"] = string.IsNullOrEmpty(activeId) ? null : activeId,
-            ["activeModeName"] = activeId != null && activeName != null ? activeName : null,
-            ["safeMode"] = new { enabled = safe?.Enabled ?? false, until = safe?.Until ?? 0, startedAt = safe?.StartedAt },
-            ["budgetMinutes"] = snapshot?.Budget?.DailyLimitMinutes,
-            ["allowlistEnabled"] = snapshot?.Allowlist?.Enabled ?? false,
-            ["customDomains"] = snapshot?.CustomBlockedDomains?.Domains ?? Array.Empty<string>(),
-            ["schedule"] = snapshot?.Schedule == null
-                ? null
-                : new { enabled = snapshot.Schedule.Enabled, startMinute = snapshot.Schedule.StartMinute, endMinute = snapshot.Schedule.EndMinute },
-            ["contentFilter"] = snapshot?.ContentFilter == null
-                ? null
-                : new
-                {
-                    social = snapshot.ContentFilter.Social,
-                    gambling = snapshot.ContentFilter.Gambling,
-                    adult = snapshot.ContentFilter.Adult,
-                    gaming = snapshot.ContentFilter.Gaming,
-                },
-            ["usage"] = usage,
-            // Live browser tab snapshot from the Session's BrowserWatcher (null when
-            // the agent never saw a browser this session — e.g. TV-like usage).
-            ["browser"] = BuildBrowserStateDto(),
-            // The console's clock cannot be trusted for deadlines (safe mode "until",
-            // request expiry); serverNow is the agent's best estimate of server time.
-            ["serverNow"] = _syncEngine.ServerNowMs(),
-            // The revision the device is currently enforcing, so the console can tell
-            // "waiting for device" (syncRevisionId != controlRevisionId) from synced.
-            ["controlRevisionId"] = snapshot?.RevisionId,
-            ["enforcementMode"] = enforcementMode,
-            ["protectionHealthy"] = protectionHealthy,
-            ["syncStatus"] = syncStatus,
-            ["syncAppliedAt"] = syncAppliedAt,
-            ["syncRevisionId"] = syncRevisionId,
-            ["pendingUnlocks"] = pendingUnlocks ?? new List<object?>(),
-            ["tamperEvents"] = tamperEvents ?? new List<object?>(),
-        };
-        return state;
-    }
 
     /// <summary>
     /// One inventoried app for the console merge. Key is the base64url package key;
     /// Blockable/ProtectedReason come from the device's own inventory upload.
     /// </summary>
-    private sealed record InvApp(string Key, string PackageName, string Label, bool? Blockable, string? ProtectedReason);
-
-    /// <summary>
-    /// Builds the console apps list the way the phone does: EVERY inventoried app is
-    /// listed, with the control policy overlaid where a rule exists. Apps without any
-    /// rule are allowed; inventory "protected" entries carry their reason so the UI can
-    /// mark them non-blockable. Sorted by label.
-    /// </summary>
-    private List<object?> BuildAppsList(ControlSnapshotV2? snapshot, List<InvApp>? inventoryApps = null)
-    {
-        // (packageName, label, blockable, protectedReason, blocked, limit)
-        var merged = new Dictionary<string, (string Pkg, string Label, bool? Blockable, string? Reason, bool? Blocked, int? Limit)>(StringComparer.Ordinal);
-
-        foreach (var inv in inventoryApps ?? new List<InvApp>())
-        {
-            merged[inv.Key] = (inv.PackageName, inv.Label, inv.Blockable, inv.ProtectedReason, null, null);
-        }
-
-        if (snapshot != null)
-        {
-            foreach (var (packageName, rule) in snapshot.EffectiveApps())
-            {
-                var key = PackageKeys.Encode(packageName);
-                var label = merged.TryGetValue(key, out var existing) && !string.IsNullOrWhiteSpace(existing.Label)
-                    ? existing.Label
-                    : LabelFor(packageName);
-                merged[key] = (packageName, label,
-                    merged.TryGetValue(key, out var e2) ? e2.Blockable : null,
-                    merged.TryGetValue(key, out var e3) ? e3.Reason : null,
-                    rule.ManualBlocked, rule.DailyLimitMinutes);
-            }
-        }
-
-        return merged
-            .Select(kv => new
-            {
-                key = kv.Key,
-                packageName = kv.Value.Pkg,
-                label = string.IsNullOrWhiteSpace(kv.Value.Label) ? kv.Value.Pkg : kv.Value.Label,
-                blocked = kv.Value.Blocked ?? false,
-                dailyLimitMinutes = kv.Value.Limit,
-                blockable = kv.Value.Blockable ?? true,
-                protectedReason = kv.Value.Reason,
-            })
-            .OrderBy(a => a.label, StringComparer.OrdinalIgnoreCase)
-            .ToList<object?>();
-    }
 
     private List<object?> BuildModesList(ControlSnapshotV2? snapshot, out string? activeId, out string? activeName)
     {
@@ -1026,386 +898,9 @@ var minutes = ms / 60_000L;
         return items.OrderByDescending(i => i.SortKey).Take(50).Select(i => i.Item).ToList();
     }
 
-    private IReadOnlyList<object?> DashboardInventory()
-    {
-        var list = new List<object?>();
-        foreach (var app in EnsureDashboardInventoryCache())
-        {
-            // key is the base64url-encoded form (safe for HTML attributes/ids);
-            // packageName is the raw exe path/package name for the control/v2 write.
-            list.Add(new { key = PackageKeys.Encode(app.AppKey), label = app.Label, packageName = app.AppKey });
-        }
-
-        return list;
-    }
-
-    /// <summary>Strongly-typed view of the local inventory for the apps-list merge.</summary>
-    private List<InvApp> DashboardInvApps()
-    {
-        var list = new List<InvApp>();
-        foreach (var app in EnsureDashboardInventoryCache())
-        {
-            list.Add(new InvApp(PackageKeys.Encode(app.AppKey), app.AppKey, app.Label, app.Blockable, app.ProtectedReason));
-        }
-
-        return list;
-    }
-
-    private IReadOnlyList<InventoryApp> EnsureDashboardInventoryCache()
-    {
-        lock (_labelLock)
-        {
-            var now = Environment.TickCount64;
-            if (_dashboardInventoryCache == null || now - _dashboardInventoryAtMs > DashboardInventoryMaxAgeMs)
-            {
-                _dashboardInventoryCache = [.. InventoryScanner.Scan()];
-                _dashboardInventoryAtMs = now;
-            }
-
-            return _dashboardInventoryCache;
-        }
-    }
-
     /// <summary>Parses a device's uploaded inventory (devices/{id}/apps) for the console merge.</summary>
-    private List<InvApp> ParseInventoryApps(string? json)
-    {
-        var list = new List<InvApp>();
-        if (string.IsNullOrWhiteSpace(json) || (json = json!.Trim()) == "null")
-        {
-            return list;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return list;
-            }
-
-            foreach (var p in doc.RootElement.EnumerateObject())
-            {
-                var key = p.Name;
-                var packageName = p.Value.ValueKind == JsonValueKind.Object
-                    && p.Value.TryGetProperty("packageName", out var pn)
-                    && pn.ValueKind == JsonValueKind.String
-                        ? pn.GetString()
-                        : null;
-                if (string.IsNullOrWhiteSpace(packageName))
-                {
-                    try
-                    {
-                        packageName = PackageKeys.Decode(key);
-                    }
-                    catch (Exception ex) when (ex is FormatException or ArgumentException)
-                    {
-                        packageName = key;
-                    }
-                }
-
-                var label = p.Value.ValueKind == JsonValueKind.Object
-                    && p.Value.TryGetProperty("label", out var l)
-                    && l.ValueKind == JsonValueKind.String
-                        ? l.GetString()
-                        : null;
-                var blockable = p.Value.ValueKind == JsonValueKind.Object
-                    && p.Value.TryGetProperty("blockable", out var b)
-                    && (b.ValueKind == JsonValueKind.True || b.ValueKind == JsonValueKind.False)
-                        ? b.GetBoolean()
-                        : (bool?)null;
-                var reason = p.Value.ValueKind == JsonValueKind.Object
-                    && p.Value.TryGetProperty("protectedReason", out var pr)
-                    && pr.ValueKind == JsonValueKind.String
-                        ? pr.GetString()
-                        : null;
-
-                list.Add(new InvApp(key, packageName!, label ?? LabelFor(packageName!), blockable, reason));
-            }
-        }
-        catch (JsonException)
-        {
-            // best effort: an unreadable inventory degrades to policy-only rows
-        }
-
-        return list;
-    }
-
-    private string HandleDashboardLogin(string req, string pin)
-    {
-        try
-        {
-            var stored = _syncEngine.LastValidSnapshot?.Pin;
-            if (stored is null)
-            {
-                // No PIN configured: the local console bootstrap accepts any PIN. The
-                // moment a PIN exists, the retry gate below applies like the overlay.
-                return JsonSerializer.Serialize(new { t = "controlLoginResult", req, ok = true }, JsonOpts);
-            }
-
-            // /api/login is reachable by any local process; without a gate a 6-digit PIN
-            // could be brute-forced quickly over loopback (the overlay path is gated too).
-            if (_dashboardLoginRetry.IsBlocked())
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    t = "controlLoginResult",
-                    req,
-                    ok = false,
-                    error = "Too many attempts. Try again in a moment.",
-                    blockedUntilMs = _dashboardLoginRetry.BlockedUntilMs(),
-                }, JsonOpts);
-            }
-
-            var ok = PinHasher.Verify(pin, stored.Salt, stored.Hash, stored.Version, stored.Algorithm, stored.Iterations);
-            if (ok)
-            {
-                _dashboardLoginRetry.RecordSuccess();
-            }
-            else
-            {
-                _dashboardLoginRetry.RecordFailure();
-            }
-
-            return JsonSerializer.Serialize(new { t = "controlLoginResult", req, ok }, JsonOpts);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { t = "controlLoginResult", req, ok = false, error = ex.Message }, JsonOpts);
-        }
-    }
-
-    private async Task<string> HandleDashboardWrite(string req, string patch)
-    {
-        try
-        {
-            var (ok, error, revisionId) = await _syncEngine.WriteControlV2Async(patch, CancellationToken.None);
-            return DashboardResult(req, ok, error, revisionId);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private string HandleDashboardUnlock(string req, string appKey, string type, long? durationMs)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(appKey))
-            {
-                return DashboardResult(req, false, "appKey is required");
-            }
-
-            if (string.Equals(type, "timed", StringComparison.OrdinalIgnoreCase))
-            {
-                _unlocks.Grant(appKey, TimeSpan.FromMilliseconds(durationMs ?? 15 * 60_000));
-            }
-            else
-            {
-                _unlocks.Grant(appKey);
-            }
-
-            // The grant alone waits for the next periodic re-evaluation before
-            // anything resumes. Parity with the SSE approval path: resume now, drop
-            // the overlay, then re-evaluate so a still-locked foreground app re-locks
-            // immediately instead of staying resumed.
-            _suspender.ResumeAll();
-            _pipeHost.BroadcastUnlock();
-            _activity.SetOverlayState("none");
-            lock (_gate)
-            {
-                _currentOverlay = "none";
-            }
-
-            EvaluateCurrentForeground();
-
-            return DashboardResult(req, true, null);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
 
     // --------------------------------------------------------- parent console (owner)
-
-    private async Task<string> HandleOwnerLogin(string req, string email, string password)
-    {
-        try
-        {
-            if (_ownerClient is null)
-            {
-                return JsonSerializer.Serialize(new { t = "ownerLoginResult", req, ok = false, error = "Owner client is not available." }, JsonOpts);
-            }
-
-            if (_ownerLoginRetry.IsBlocked())
-            {
-                return JsonSerializer.Serialize(new { t = "ownerLoginResult", req, ok = false, error = "Too many sign-in attempts. Try again later." }, JsonOpts);
-            }
-
-            var (ok, error, uid) = await _ownerClient.SignInWithEmailPasswordAsync(email, password, CancellationToken.None);
-            if (!ok || uid is null)
-            {
-                _ownerLoginRetry.RecordFailure();
-                return JsonSerializer.Serialize(new { t = "ownerLoginResult", req, ok = false, error = error ?? "Sign-in failed." }, JsonOpts);
-            }
-
-            _ownerLoginRetry.RecordSuccess();
-            var devicesJson = await _syncEngine.ReadDeviceListAsync(uid, CancellationToken.None);
-            var devices = ParseDeviceList(devicesJson);
-            return JsonSerializer.Serialize(new { t = "ownerLoginResult", req, ok = true, ownerUid = uid, devices }, JsonOpts);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { t = "ownerLoginResult", req, ok = false, error = ex.Message }, JsonOpts);
-        }
-    }
-
-    private async Task<string> HandleListDevices(string req)
-    {
-        try
-        {
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn || _ownerClient.Uid is null)
-            {
-                return JsonSerializer.Serialize(new { t = "deviceList", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var devicesJson = await _syncEngine.ReadDeviceListAsync(_ownerClient.Uid, CancellationToken.None);
-            var devices = ParseDeviceList(devicesJson);
-            return JsonSerializer.Serialize(new { t = "deviceList", req, ok = true, devices }, JsonOpts);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { t = "deviceList", req, ok = false, error = ex.Message }, JsonOpts);
-        }
-    }
-
-    private async Task<string> HandleDeviceState(string req, string deviceId)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return JsonSerializer.Serialize(new { t = "controlState", req, ok = false, error = "deviceId is required." }, JsonOpts);
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn || _ownerClient.Uid is null)
-            {
-                return JsonSerializer.Serialize(new { t = "controlState", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            // The SSE event loop re-fetches this state on a timer; a short cache keeps
-            // an open console from multiplying Firebase reads (each compose is ~6 GETs).
-            if (TryGetCachedDeviceState(deviceId, out var cachedRaw))
-            {
-                return WrapCachedDeviceState(req, cachedRaw);
-            }
-
-            var (snapshot, _) = await _syncEngine.ReadControlV2Async(deviceId, CancellationToken.None);
-
-            var label = deviceId;
-            var online = false;
-            long lastSeen = 0;
-            string? enforcementMode = null;
-            bool? protectionHealthy = null;
-            var listRaw = await _syncEngine.ReadDeviceListEntryAsync(_ownerClient.Uid, deviceId, CancellationToken.None);
-            if (!string.IsNullOrWhiteSpace(listRaw) && listRaw!.Trim() != "null")
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(listRaw);
-                    if (doc.RootElement.ValueKind == JsonValueKind.Object)
-                    {
-                        var r = doc.RootElement;
-                        if (r.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String)
-                        {
-                            label = l.GetString() ?? deviceId;
-                        }
-
-                        online = r.TryGetProperty("online", out var o) && o.ValueKind == JsonValueKind.True;
-                        if (r.TryGetProperty("lastSeen", out var ls) && ls.ValueKind == JsonValueKind.Number)
-                        {
-                            lastSeen = ls.GetInt64();
-                        }
-
-                        // Same tiles the phone's device card shows (Mode / Health).
-                        if (r.TryGetProperty("enforcementMode", out var em) && em.ValueKind == JsonValueKind.String)
-                        {
-                            enforcementMode = em.GetString();
-                        }
-
-                        if (r.TryGetProperty("protectionHealthy", out var ph)
-                            && (ph.ValueKind == JsonValueKind.True || ph.ValueKind == JsonValueKind.False))
-                        {
-                            protectionHealthy = ph.GetBoolean();
-                        }
-                    }
-                }
-                catch (JsonException)
-                {
-                    // best effort: fall back to deviceId
-                }
-            }
-
-            var stateRaw = await _syncEngine.ReadDeviceAppsStateAsync(deviceId, CancellationToken.None);
-            // Full installed-app inventory: the console lists every app (phone parity),
-            // with the control policy overlaid where a rule exists.
-            var inventoryRaw = await _syncEngine.ReadDeviceInventoryAsync(deviceId, CancellationToken.None);
-            var inventoryApps = ParseInventoryApps(inventoryRaw);
-            var labelByPkg = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var inv in inventoryApps)
-            {
-                labelByPkg[inv.PackageName] = inv.Label;
-            }
-
-            var usage = ParseAppsState(stateRaw, labelByPkg);
-
-            string? syncStatus = null;
-            long? syncAppliedAt = null;
-            string? syncRevisionId = null;
-            var syncRaw = await _syncEngine.ReadDeviceSyncAppliedAsync(deviceId, CancellationToken.None).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(syncRaw) && syncRaw!.Trim() != "null")
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(syncRaw);
-                    var r = doc.RootElement;
-                    if (r.ValueKind == JsonValueKind.Object)
-                    {
-                        syncStatus = r.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
-                        syncRevisionId = r.TryGetProperty("revisionId", out var rid) && rid.ValueKind == JsonValueKind.String ? rid.GetString() : null;
-                        if (r.TryGetProperty("appliedAt", out var aa) && aa.ValueKind == JsonValueKind.Number && aa.TryGetInt64(out var appliedAt))
-                        {
-                            syncAppliedAt = appliedAt;
-                        }
-                    }
-                }
-                catch (JsonException)
-                {
-                    // best effort: no sync status
-                }
-            }
-
-            var pendingUnlocksRaw = await _syncEngine.ReadUnlockRequestsAsync(deviceId, CancellationToken.None).ConfigureAwait(false);
-            var pendingUnlocks = ParsePendingUnlocks(pendingUnlocksRaw);
-
-            var tamperRaw = await _syncEngine.ReadTamperEventsAsync(deviceId, CancellationToken.None).ConfigureAwait(false);
-            var tamperEvents = ParseTamperEvents(tamperRaw);
-
-            var stateJson = ComposeStateDtoRaw(deviceId, snapshot, paired: true, pinConfigured: snapshot?.Pin is not null,
-                thisDevice: false, remoteUsage: usage, label: label, online: online, lastSeen: lastSeen,
-                syncStatus: syncStatus, syncAppliedAt: syncAppliedAt, syncRevisionId: syncRevisionId,
-                pendingUnlocks: pendingUnlocks, tamperEvents: tamperEvents,
-                enforcementMode: enforcementMode, protectionHealthy: protectionHealthy,
-                inventoryApps: inventoryApps);
-            CacheDeviceState(deviceId, stateJson);
-            return WrapCachedDeviceState(req, stateJson);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { t = "controlState", req, ok = false, error = ex.Message }, JsonOpts);
-        }
-    }
 
     // ------------------------------------------------- device state cache (SSE)
     private const long DeviceStateCacheTtlMs = 10_000;
@@ -1475,143 +970,6 @@ var minutes = ms / 60_000L;
         }
     }
 
-    private async Task<string> HandleDeviceWrite(string req, string deviceId, string patch)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return DashboardResult(req, false, "deviceId is required.");
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn)
-            {
-                return JsonSerializer.Serialize(new { t = "controlResult", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var (ok, error, revisionId) = await _syncEngine.WriteControlV2ForDeviceAsync(deviceId, patch, CancellationToken.None);
-            if (ok)
-            {
-                InvalidateDeviceStateCache(deviceId);
-            }
-
-            return DashboardResult(req, ok, error, revisionId);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private async Task<string> HandleDeviceUnlock(string req, string deviceId, string appKey, string type, long? durationMs)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return DashboardResult(req, false, "deviceId is required.");
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn)
-            {
-                return JsonSerializer.Serialize(new { t = "controlResult", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var (ok, error) = await _syncEngine.RequestUnlockForDeviceAsync(deviceId, appKey, type, durationMs, CancellationToken.None);
-            return DashboardResult(req, ok, error);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private async Task<string> HandleDeviceCommand(string req, string deviceId, string type, string? packageName)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return DashboardResult(req, false, "deviceId is required.");
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn)
-            {
-                return JsonSerializer.Serialize(new { t = "controlResult", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var (ok, error) = await _syncEngine.SendCommandForDeviceAsync(deviceId, type, packageName, CancellationToken.None);
-            if (ok)
-            {
-                InvalidateDeviceStateCache(deviceId);
-            }
-
-            return DashboardResult(req, ok, error);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private async Task<string> HandleDevicePin(string req, string deviceId, string pin)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return DashboardResult(req, false, "deviceId is required.");
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn)
-            {
-                return JsonSerializer.Serialize(new { t = "controlResult", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var (ok, error) = await _syncEngine.SetPinForDeviceAsync(deviceId, pin, CancellationToken.None);
-            if (ok)
-            {
-                InvalidateDeviceStateCache(deviceId);
-            }
-
-            return DashboardResult(req, ok, error);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private async Task<string> HandleDeviceUnlockRespond(string req, string deviceId, string requestId, string action)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(deviceId))
-            {
-                return DashboardResult(req, false, "deviceId is required.");
-            }
-
-            if (_ownerClient is null || !_ownerClient.IsOwnerSignedIn)
-            {
-                return JsonSerializer.Serialize(new { t = "controlResult", req, ok = false, error = "Owner not signed in." }, JsonOpts);
-            }
-
-            var (ok, error) = await _syncEngine.RespondUnlockRequestAsync(deviceId, requestId, action, CancellationToken.None);
-            if (ok)
-            {
-                InvalidateDeviceStateCache(deviceId);
-            }
-
-            return DashboardResult(req, ok, error);
-        }
-        catch (Exception ex)
-        {
-            return DashboardResult(req, false, ex.Message);
-        }
-    }
-
-    private static string DashboardResult(string req, bool ok, string? error, string? revisionId = null) =>
-        JsonSerializer.Serialize(new { t = "controlResult", req, ok, error, revisionId }, JsonOpts);
 
     // ----------------------------------------------------------------- control
     private async Task HandleControlAppliedAsync(ControlSnapshotV2 snapshot)
@@ -1683,7 +1041,7 @@ var minutes = ms / 60_000L;
 
             if (snapshot is not null)
             {
-                safeMode = _enforcement.SafeModeActive(snapshot);
+                safeMode = _enforcement.SafeModeActive(snapshot, _syncEngine.ServerNowMs());
                 var apps = snapshot.EffectiveApps();
                 foreach (var (appKey, rule) in apps)
                 {
@@ -1994,7 +1352,11 @@ var minutes = ms / 60_000L;
             return (false, "none");
         }
 
-        var decision = _enforcement.Decide(snapshot, appKey, _ledger, _unlocks, _agentAppKey);
+        // Server clock: safeMode.Until and unlock deadlines are written against the
+        // RTDB/server time, so a skewed local clock must not mis-arm Safe Mode or
+        // extend/truncate timed unlocks.
+        var serverNowMs = _syncEngine.ServerNowMs();
+        var decision = _enforcement.Decide(snapshot, appKey, _ledger, _unlocks, _agentAppKey, serverNowMs);
         return (decision.Locked, decision.Reason);
     }
 
@@ -2223,7 +1585,10 @@ var minutes = ms / 60_000L;
 
             if (!string.IsNullOrEmpty(appKey))
             {
-                _unlocks.Grant(appKey);
+                // Server clock: timed-expiry bookkeeping stays consistent with RTDB
+                // timestamps even when the laptop clock is skewed (one-visit grants
+                // carry no deadline, so this is a no-op for them).
+                _unlocks.GrantAt(appKey, _syncEngine.ServerNowMs());
             }
 
             _suspender.ResumeAll();
@@ -2235,6 +1600,9 @@ var minutes = ms / 60_000L;
             }
 
             _logger.LogInformation("PIN accepted; one-visit unlock granted for {AppKey}", appKey);
+            // Same foreground re-evaluation the unlock-approval path uses: the grant can
+            // flip the decision for the focused app (and refresh any still-locked ones).
+            EvaluateCurrentForeground();
             _ = RunSafeAsync("state-upload", () => UploadStatesAsync(true));
         }
         else
@@ -2297,8 +1665,31 @@ var minutes = ms / 60_000L;
             }
 
             var requestId = property.Name;
-            if (_handledUnlockRequests.Contains(requestId))
+            lock (_dedupeGate)
             {
+                if (_handledUnlockRequests.Contains(requestId))
+                {
+                    continue;
+                }
+            }
+
+            // Retention: terminal requests the TV already applied, or anything older
+            // than 7 days, is deleted so the unlockRequests node does not grow forever.
+            var createdAt = GetLong(property.Value, "createdAt");
+            var serverNow = _syncEngine.ServerNowMs();
+            var tvApplyStatus = GetString(property.Value, "tvApplyStatus");
+            var status = GetString(property.Value, "status");
+            var pastRetention = createdAt > 0 && serverNow - createdAt > (long)UnlockRequestRetention.TotalMilliseconds;
+            if (pastRetention
+                || (status is PolicyConstants.UNLOCK_DENIED or PolicyConstants.UNLOCK_EXPIRED
+                    && string.Equals(tvApplyStatus, PolicyConstants.SYNC_STATUS_APPLIED, StringComparison.Ordinal)))
+            {
+                lock (_dedupeGate)
+                {
+                    _handledUnlockRequests.Add(requestId);
+                }
+
+                await _firebase.PutAsync(FirebasePaths.DeviceUnlockRequest(_deviceId, requestId), "null", _ct);
                 continue;
             }
 
@@ -2306,16 +1697,9 @@ var minutes = ms / 60_000L;
             // based: expiresAt is written from the server clock (owner side filters the
             // same way), so a skewed local clock can't resurrect expired approvals.
             var expiresAt = GetLong(property.Value, "expiresAt");
-            if (expiresAt > 0 && _syncEngine.ServerNowMs() > expiresAt)
+            if (expiresAt > 0 && serverNow > expiresAt)
             {
-                _handledUnlockRequests.Add(requestId);
-                continue;
-            }
-
-            var status = GetString(property.Value, "status");
-            if (status != PolicyConstants.UNLOCK_APPROVED)
-            {
-                if (status is PolicyConstants.UNLOCK_DENIED or PolicyConstants.UNLOCK_EXPIRED)
+                lock (_dedupeGate)
                 {
                     _handledUnlockRequests.Add(requestId);
                 }
@@ -2323,13 +1707,41 @@ var minutes = ms / 60_000L;
                 continue;
             }
 
-            _handledUnlockRequests.Add(requestId);
-            if (_handledUnlockRequests.Count > HandledUnlockRequestsMax)
+            // The TV apply marker survives restarts: without this check a replayed
+            // still-approved request would be re-granted on every service start.
+            if (string.Equals(tvApplyStatus, PolicyConstants.SYNC_STATUS_APPLIED, StringComparison.Ordinal))
             {
-                // Bound the dedupe set the same way _processedCommands is bounded.
-                foreach (var stale in _handledUnlockRequests.Take(_handledUnlockRequests.Count - HandledUnlockRequestsMax))
+                lock (_dedupeGate)
                 {
-                    _handledUnlockRequests.Remove(stale);
+                    _handledUnlockRequests.Add(requestId);
+                }
+
+                continue;
+            }
+
+            if (status != PolicyConstants.UNLOCK_APPROVED)
+            {
+                if (status is PolicyConstants.UNLOCK_DENIED or PolicyConstants.UNLOCK_EXPIRED)
+                {
+                    lock (_dedupeGate)
+                    {
+                        _handledUnlockRequests.Add(requestId);
+                    }
+                }
+
+                continue;
+            }
+
+            lock (_dedupeGate)
+            {
+                _handledUnlockRequests.Add(requestId);
+                if (_handledUnlockRequests.Count > HandledUnlockRequestsMax)
+                {
+                    // Bound the dedupe set the same way _processedCommands is bounded.
+                    foreach (var stale in _handledUnlockRequests.Take(_handledUnlockRequests.Count - HandledUnlockRequestsMax))
+                    {
+                        _handledUnlockRequests.Remove(stale);
+                    }
                 }
             }
 
@@ -2349,7 +1761,9 @@ var minutes = ms / 60_000L;
 
         if (!string.IsNullOrEmpty(appKey))
         {
-            _unlocks.Grant(appKey, duration);
+            // Server clock: approvalDurationMs is measured from the owner's (server)
+            // time, so a skewed local clock must not shorten or extend the window.
+            _unlocks.GrantAt(appKey, _syncEngine.ServerNowMs(), duration);
         }
 
         _suspender.ResumeAll();
@@ -2402,16 +1816,24 @@ var minutes = ms / 60_000L;
             }
 
             var commandId = property.Name;
-            if (_processedCommands.Contains(commandId))
+            lock (_dedupeGate)
             {
-                continue;
+                if (_processedCommands.Contains(commandId))
+                {
+                    continue;
+                }
             }
 
             var value = property.Value;
             var status = GetString(value, "status");
             if (!string.IsNullOrEmpty(status) && status != PolicyConstants.COMMAND_PENDING)
             {
-                _processedCommands.Add(commandId);
+                lock (_dedupeGate)
+                {
+                    _processedCommands.Add(commandId);
+                    TrimProcessedCommandsLocked();
+                }
+
                 continue;
             }
 
@@ -2421,26 +1843,50 @@ var minutes = ms / 60_000L;
                 continue;
             }
 
+            // TTL against the SERVER clock: createdAt is written by the owner console
+            // with server time, so a skewed laptop clock must not expire fresh commands
+            // (or keep stale ones alive).
             var createdAt = GetLong(value, "createdAt");
             var ttl = CommandTtl(type);
-            if (createdAt <= 0 || NowMs() > createdAt + (long)ttl.TotalMilliseconds)
+            if (createdAt <= 0 || _syncEngine.ServerNowMs() > createdAt + (long)ttl.TotalMilliseconds)
             {
-                _processedCommands.Add(commandId);
+                lock (_dedupeGate)
+                {
+                    _processedCommands.Add(commandId);
+                    TrimProcessedCommandsLocked();
+                }
+
                 await FinishCommandAsync(commandId, PolicyConstants.COMMAND_EXPIRED, null);
                 continue;
             }
 
             // Claim the command so a second service instance cannot double-run it.
+            // Re-read first and stand down when another writer already flipped the
+            // status away from pending (same pattern as CommandsLoop's claim). SSE
+            // and the 5s poll can deliver the same pending command concurrently.
+            var currentJson = await _firebase.GetAsync(
+                FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId, _ct);
+            if (ReadCommandStatus(currentJson) is { } currentStatus
+                && currentStatus != PolicyConstants.COMMAND_PENDING)
+            {
+                lock (_dedupeGate)
+                {
+                    _processedCommands.Add(commandId);
+                    TrimProcessedCommandsLocked();
+                }
+
+                continue;
+            }
+
             // "claimedAt" is the rules-whitelisted field (not the TV's startedAt).
             var claim = new JsonObject { ["status"] = PolicyConstants.COMMAND_RUNNING, ["claimedAt"] = Sv() };
             await _firebase.PatchAsync(
                 FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId, claim.ToJsonString(JsonOpts), _ct);
 
-            _processedCommands.Add(commandId);
-            if (_processedCommands.Count > 1000)
+            lock (_dedupeGate)
             {
-                _processedCommands.Clear();
                 _processedCommands.Add(commandId);
+                TrimProcessedCommandsLocked();
             }
 
             try
@@ -2453,6 +1899,55 @@ var minutes = ms / 60_000L;
                 _logger.LogWarning(ex, "Command {Type} ({Id}) failed", type, commandId);
                 await FinishCommandAsync(commandId, PolicyConstants.COMMAND_FAILED, ex.Message);
             }
+
+            // Terminal commands are acked above; delete them so the node does not
+            // grow forever and the SSE replay stays small.
+            await DeleteCommandAsync(commandId);
+        }
+    }
+
+    /// <summary>Oldest-first trim of the dedupe list, keeping the newest ProcessedCommandsKeep ids.</summary>
+    private void TrimProcessedCommandsLocked()
+    {
+        if (_processedCommands.Count <= ProcessedCommandsMax)
+        {
+            return;
+        }
+
+        _processedCommands.RemoveRange(0, _processedCommands.Count - ProcessedCommandsKeep);
+    }
+
+    private static string? ReadCommandStatus(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("status", out var value)
+                && value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // treat malformed nodes as unclaimed
+        }
+
+        return null;
+    }
+
+    private async Task DeleteCommandAsync(string commandId)
+    {
+        try
+        {
+            await _firebase.PutAsync(
+                FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId, "null", _ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Command {Id} cleanup failed (retained until next sweep)", commandId);
         }
     }
 
@@ -2537,7 +2032,11 @@ var minutes = ms / 60_000L;
         _pairing.Rotate();
         WriteDeviceJson();
         _ownerUid = null;
-        _handledUnlockRequests.Clear();
+        lock (_dedupeGate)
+        {
+            _handledUnlockRequests.Clear();
+        }
+
         _pipeHost.BroadcastPairedState(IsPaired); // tray returns: a new pairing is needed
 
         // Local protection (snapshot, ledger, enforcement) intentionally stays in place.
@@ -2585,6 +2084,10 @@ var minutes = ms / 60_000L;
         }
     }
 
+    // Single-flight guard: the pair-request SSE stream and the 5s boundary poll can
+    // both fire for the same pending request; only one may process it at a time.
+    private int _pairRequestInFlight;
+
     private async Task PollPairRequestsAsync()
     {
         if (!string.IsNullOrEmpty(_ownerUid))
@@ -2592,6 +2095,23 @@ var minutes = ms / 60_000L;
             return; // already paired
         }
 
+        if (Interlocked.CompareExchange(ref _pairRequestInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await PollPairRequestsCoreAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _pairRequestInFlight, 0);
+        }
+    }
+
+    private async Task PollPairRequestsCoreAsync()
+    {
         var json = await _firebase.GetAsync(FirebasePaths.PairRequests(_deviceId), _ct);
         if (string.IsNullOrWhiteSpace(json) || json.Trim() == "null")
         {
@@ -2638,7 +2158,9 @@ var minutes = ms / 60_000L;
         var code = GetString(request.Value, "code");
         var createdAt = GetLong(request.Value, "createdAt");
 
-        var now = NowMs();
+        // Server clock: pair requests carry a server-side createdAt, and the pairing
+        // secret rotates on a TTL measured against that same clock.
+        var now = _syncEngine.ServerNowMs();
         if (createdAt <= 0 || now > createdAt + PolicyConstants.PAIRING_TTL_MS)
         {
             await RespondToPairRequestAsync(requestId, "expired");
@@ -2726,7 +2248,9 @@ var minutes = ms / 60_000L;
         var runtime = new JsonObject
         {
             ["lastHeartbeatWriteAt"] = Sv(),
-            ["connected"] = true,
+            // Real SSE connectivity from the sync engine, not a hardcoded true: the
+            // phone's sync-health card must show a dead stream as disconnected.
+            ["connected"] = _syncEngine.IsStreamConnected,
             ["sessionId"] = _syncEngine.SessionId,
             ["protocolVersion"] = 2
         };
@@ -2832,7 +2356,10 @@ var minutes = ms / 60_000L;
         if (!string.Equals(_lastUploadedDayKey, dayKey, StringComparison.Ordinal))
         {
             _lastUploadedDayKey = dayKey;
-            _lastUploadedAppStates.Clear();
+            lock (_dedupeGate)
+            {
+                _lastUploadedAppStates.Clear();
+            }
         }
 
         var tracked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2886,10 +2413,13 @@ var minutes = ms / 60_000L;
         foreach (var (encodedKey, entry) in states)
         {
             var json = entry.ToJsonString(JsonOpts);
-            if (!_lastUploadedAppStates.TryGetValue(encodedKey, out var previous) || previous != json)
+            lock (_dedupeGate)
             {
-                changedStates[encodedKey] = entry.DeepClone();
-                _lastUploadedAppStates[encodedKey] = json;
+                if (!_lastUploadedAppStates.TryGetValue(encodedKey, out var previous) || previous != json)
+                {
+                    changedStates[encodedKey] = entry.DeepClone();
+                    _lastUploadedAppStates[encodedKey] = json;
+                }
             }
         }
 
@@ -2927,7 +2457,7 @@ var minutes = ms / 60_000L;
         if (!string.IsNullOrWhiteSpace(tabTitle)
             && (previous is null || !string.Equals(previous.ActiveTab, tabTitle, StringComparison.Ordinal)))
         {
-            _activity.StartTab(snapshot.AppKey, tabTitle.Length > 160 ? tabTitle[..160] : tabTitle, NowMs(), snapshot.ActiveUrl);
+            _activity.StartTab(snapshot.AppKey, Truncate(tabTitle, ActivityLabelMax)!, NowMs(), snapshot.ActiveUrl);
         }
 
         var now = Environment.TickCount64;
@@ -2999,10 +2529,10 @@ var minutes = ms / 60_000L;
 
         var browserJson = new JsonObject
         {
-            ["browser"] = snapshot.AppKey,
-            ["label"] = snapshot.Label,
-            ["activeTab"] = snapshot.ActiveTab,
-            ["activeUrl"] = snapshot.ActiveUrl,
+            ["browser"] = Truncate(snapshot.AppKey, BrowserNameMax),
+            ["label"] = Truncate(snapshot.Label, BrowserNameMax),
+            ["activeTab"] = Truncate(snapshot.ActiveTab, BrowserTabMax),
+            ["activeUrl"] = Truncate(snapshot.ActiveUrl, BrowserUrlMax),
             ["tabCount"] = snapshot.TabCount,
             ["tabs"] = BuildTabsJson(snapshot.Tabs),
             ["domainsToday"] = BuildDomainsJson(domains),
@@ -3036,10 +2566,10 @@ var minutes = ms / 60_000L;
         var array = new JsonArray();
         foreach (var tab in tabs)
         {
-            var entry = new JsonObject { ["title"] = tab.Title };
+            var entry = new JsonObject { ["title"] = Truncate(tab.Title, BrowserTabMax) };
             if (!string.IsNullOrEmpty(tab.Url))
             {
-                entry["url"] = tab.Url;
+                entry["url"] = Truncate(tab.Url, BrowserUrlMax);
             }
 
             array.Add(entry);
@@ -3077,10 +2607,10 @@ var minutes = ms / 60_000L;
             var domains = new Dictionary<string, long>(_browserDomains, StringComparer.Ordinal);
             return new JsonObject
             {
-                ["browser"] = _currentBrowser.AppKey,
-                ["label"] = _currentBrowser.Label,
-                ["activeTab"] = _currentBrowser.ActiveTab,
-                ["activeUrl"] = _currentBrowser.ActiveUrl,
+                ["browser"] = Truncate(_currentBrowser.AppKey, BrowserNameMax),
+                ["label"] = Truncate(_currentBrowser.Label, BrowserNameMax),
+                ["activeTab"] = Truncate(_currentBrowser.ActiveTab, BrowserTabMax),
+                ["activeUrl"] = Truncate(_currentBrowser.ActiveUrl, BrowserUrlMax),
                 ["tabCount"] = _currentBrowser.TabCount,
                 ["tabs"] = BuildTabsJson(_currentBrowser.Tabs),
                 ["domainsToday"] = BuildDomainsJson(domains),
@@ -3150,13 +2680,22 @@ var minutes = ms / 60_000L;
             var endedAt = PickLong(node, "EndedAt", "endedAt", "EndedAtMs", "endedAtMs");
             // Tab sessions arrive with type "tab" (ActivityLog queue); default to app.
             var entryType = PickString(node, "Type", "type", "EntryType", "entryType");
+            var historyAppKey = PickString(node, "AppKey", "appKey", "PackageName", "packageName");
+            var historyAppLabel = PickString(node, "Label", "label", "AppLabel", "appLabel");
+            if (string.IsNullOrEmpty(historyAppLabel))
+            {
+                // RTDB rules reject missing labels; fall back to the package name and
+                // clamp lengths so oversized titles/labels never fail the write.
+                historyAppLabel = historyAppKey;
+            }
+
             var history = new JsonObject
             {
                 ["id"] = id,
                 ["type"] = string.IsNullOrEmpty(entryType) ? "app" : entryType,
-                ["appKey"] = PickString(node, "AppKey", "appKey", "PackageName", "packageName"),
-                ["appLabel"] = PickString(node, "Label", "label", "AppLabel", "appLabel"),
-                ["title"] = PickString(node, "Title", "title"),
+                ["appKey"] = historyAppKey,
+                ["appLabel"] = Truncate(historyAppLabel, ActivityLabelMax),
+                ["title"] = Truncate(PickString(node, "Title", "title"), ActivityLabelMax),
                 ["url"] = PickString(node, "Url", "url"),
                 ["subtitle"] = null,
                 ["startedAt"] = startedAt,
@@ -3192,8 +2731,113 @@ var minutes = ms / 60_000L;
         BroadcastDataChanged(_deviceId);
     }
 
+    // ------------------------------------------------------------ rtdb retention
+    private const int RtdbPruneBatchSize = 100;
+
+    /// <summary>
+    /// Retention sweep for append-only RTDB nodes the agent otherwise grows forever:
+    /// tamperEvents older than 30 days and activity/history records older than 7 days.
+    /// Child keys are listed via GET, stale ids collected, then deleted with one
+    /// multi-path null PATCH per batch. Best effort: any failure is logged at Warning
+    /// and retried on the next sweep (startup + every 24h).
+    /// </summary>
+    private async Task PruneRtdbNodesAsync()
+    {
+        try
+        {
+            var now = _syncEngine.ServerNowMs();
+            var stalePaths = new List<string>();
+            await CollectStaleChildPathsAsync(
+                FirebasePaths.DeviceTamperEvents(_deviceId), TamperEventRetention, now, ["createdAt"], stalePaths);
+            await CollectStaleChildPathsAsync(
+                FirebasePaths.DeviceActivityHistory(_deviceId), ActivityHistoryRetention, now, ["endedAt", "startedAt"], stalePaths);
+
+            for (var offset = 0; offset < stalePaths.Count; offset += RtdbPruneBatchSize)
+            {
+                var batch = new JsonObject();
+                foreach (var stalePath in stalePaths.Skip(offset).Take(RtdbPruneBatchSize))
+                {
+                    batch[stalePath] = null;
+                }
+
+                await _firebase.PatchAsync("", batch.ToJsonString(JsonOpts), _ct);
+            }
+
+            if (stalePaths.Count > 0)
+            {
+                _logger.LogInformation("RTDB retention sweep deleted {Count} stale nodes", stalePaths.Count);
+            }
+        }
+        catch (OperationCanceledException) when (_ct.IsCancellationRequested)
+        {
+            // shutting down
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "RTDB retention sweep failed");
+        }
+    }
+
+    /// <summary>Child-lists a node via GET and appends the full paths of children whose
+    /// newest timestamp field is older than the retention window.</summary>
+    private async Task CollectStaleChildPathsAsync(
+        string nodePath, TimeSpan retention, long nowMs, string[] timeFields, List<string> stalePaths)
+    {
+        try
+        {
+            var json = await _firebase.GetAsync(nodePath, _ct);
+            if (string.IsNullOrWhiteSpace(json) || json.Trim() == "null")
+            {
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            var cutoff = nowMs - (long)retention.TotalMilliseconds;
+            foreach (var child in doc.RootElement.EnumerateObject())
+            {
+                var stamp = 0L;
+                foreach (var field in timeFields)
+                {
+                    if (child.Value.ValueKind == JsonValueKind.Object
+                        && child.Value.TryGetProperty(field, out var value)
+                        && value.ValueKind == JsonValueKind.Number
+                        && value.TryGetInt64(out var parsed))
+                    {
+                        stamp = Math.Max(stamp, parsed);
+                    }
+                }
+
+                // Missing/unparsable timestamps are never pruned by the sweep.
+                if (stamp > 0 && stamp < cutoff)
+                {
+                    stalePaths.Add(nodePath + "/" + child.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Retention child-list failed for {NodePath}", nodePath);
+        }
+    }
+
     // ------------------------------------------------------------------- helpers
     private long NowMs() => _time.GetUtcNow().ToUnixTimeMilliseconds();
+
+    /// <summary>Clamps a value to the RTDB rules' max length; null/empty passes through.</summary>
+    private static string? Truncate(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+
+        return value.Length <= max ? value : value.Substring(0, max);
+    }
 
     private async Task RunSafeAsync(string name, Func<Task> action)
     {
@@ -3307,7 +2951,11 @@ var minutes = ms / 60_000L;
         var snapshot = _syncEngine.LastValidSnapshot;
         if (snapshot is null) return;
 
-        var today = DateTime.UtcNow.ToString("yyyyMMdd");
+        // Local day key (same pattern as LocalDayKey/UploadStatesAsync): usage resets at
+        // local midnight, so a UTC key would reset the warning toasts hours late/early
+        // and could re-toast or skip a day entirely.
+        var today = TimeZoneInfo.ConvertTime(_time.GetUtcNow(), _time.LocalTimeZone)
+            .ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
 
         // 1. App-specific daily limit warning
         string? activeKey;
@@ -3599,12 +3247,17 @@ var minutes = ms / 60_000L;
         return null;
     }
 
-    private sealed record DeviceIdentityJson(string DeviceId, string Secret, string Code);
+    private sealed record DeviceIdentityJson(string DeviceId, string Code);
 
     // Local PIN retry policy: 5 failures inside 5 minutes block further attempts for
     // 60s, doubling per consecutive lock (capped at 15 minutes); success resets state.
     // (PinRetryPolicy is not part of CONTRACTS.md, so it lives here.)
-    private sealed class PinRetryGate(TimeProvider time)
+    /// <summary>
+    /// PIN brute-force gate with reboot-proof strikes: the escalating strike count and
+    /// block deadline persist to the state dir, so restarting the machine (a standard
+    /// user can do that freely) does not hand back 5 fresh guesses per boot.
+    /// </summary>
+    private sealed class PinRetryGate(TimeProvider time, string? persistencePath = null)
     {
         private const int MaxFailures = 5;
         private const long WindowMs = 5 * 60_000L;
@@ -3650,6 +3303,7 @@ var minutes = ms / 60_000L;
                     var blockMs = Math.Min(BaseBlockMs << Math.Min(_strikeCount - 1, 8), MaxBlockMs);
                     _blockedUntilMs = now + blockMs;
                     _failures.Clear();
+                    PersistLocked();
                 }
             }
         }
@@ -3661,9 +3315,29 @@ var minutes = ms / 60_000L;
                 _failures.Clear();
                 _blockedUntilMs = 0;
                 _strikeCount = 0;
+                PersistLocked();
             }
         }
 
         private long Now() => time.GetUtcNow().ToUnixTimeMilliseconds();
+
+        private void PersistLocked()
+        {
+            if (persistencePath == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(
+                    new { strikeCount = _strikeCount, blockedUntilMs = _blockedUntilMs });
+                GuardPulse.Agent.Core.AtomicFile.WriteAllText(persistencePath, json);
+            }
+            catch
+            {
+                // Persistence is best-effort; the in-memory gate still applies.
+            }
+        }
     }
 }

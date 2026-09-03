@@ -46,7 +46,9 @@ public sealed class OneVisitUnlocks
     {
     }
 
-    /// <summary>Grants an unlock. Without a duration it holds until cleared; with one, until it expires.</summary>
+    /// <summary>Grants an unlock. Without a duration it holds until cleared; with one, until it expires.
+    /// The deadline is stored as epoch ms, so callers tracking the server clock grant with
+    /// <see cref="GrantAt"/> (or serverNowMs) to keep expiry consistent with RTDB-written timestamps.</summary>
     public void Grant(string appKey, TimeSpan? duration = null)
     {
         lock (this.gate)
@@ -58,11 +60,30 @@ public sealed class OneVisitUnlocks
         }
     }
 
-    public bool IsUnlocked(string appKey)
+    /// <summary>
+    /// Grants an unlock like <see cref="Grant"/>, but the timed deadline is measured from
+    /// <paramref name="nowMs"/> (the server clock) instead of the local one.
+    /// </summary>
+    public void GrantAt(string appKey, long nowMs, TimeSpan? duration = null)
     {
         lock (this.gate)
         {
-            PruneExpired();
+            this.entries[appKey] = duration == null
+                ? null
+                : nowMs + (long)duration.Value.TotalMilliseconds;
+            Persist();
+        }
+    }
+
+    /// <summary>
+    /// True while a grant for <paramref name="appKey"/> is live. <paramref name="nowMs"/> is
+    /// the server-clock epoch ms used for timed-expiry checks; null falls back to the local clock.
+    /// </summary>
+    public bool IsUnlocked(string appKey, long? nowMs = null)
+    {
+        lock (this.gate)
+        {
+            PruneExpired(nowMs);
             return this.entries.ContainsKey(appKey);
         }
     }
@@ -90,9 +111,9 @@ public sealed class OneVisitUnlocks
         }
     }
 
-    private void PruneExpired()
+    private void PruneExpired(long? nowMs = null)
     {
-        var now = NowMs();
+        var now = nowMs ?? NowMs();
         var expired = new List<string>();
         foreach (var (appKey, expiresAtMs) in this.entries)
         {

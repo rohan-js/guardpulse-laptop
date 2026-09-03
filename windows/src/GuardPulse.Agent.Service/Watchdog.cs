@@ -1,5 +1,5 @@
 // Watchdog: keeps one session agent alive per interactive session.
-// Every 5s it enumerates active WTS sessions, checks for a live agent in each and,
+// Every 10s it enumerates active WTS sessions, checks for a live agent in each and,
 // when missing, relaunches it into that session via WTSQueryUserToken + CreateProcessAsUser.
 // (This is the correct approach for launching UI from session 0; the installer's HKLM Run
 // key is only a logon-time fallback.) Detects agent kills and raises throttled tamper events.

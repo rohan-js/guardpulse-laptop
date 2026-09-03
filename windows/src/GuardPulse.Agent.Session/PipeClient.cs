@@ -74,7 +74,8 @@ public sealed class PipeClient : IDisposable
                 }
                 catch (Exception)
                 {
-                    // dropped; receive loop will reconnect and messages re-queue
+                    // write failed (pipe down / disposing); the reconnect drain in
+                    // RunAsync clears this stale backlog, so it is not re-queued here
                 }
             }
         }
@@ -89,6 +90,16 @@ public sealed class PipeClient : IDisposable
                 _stream = new NamedPipeClientStream(
                     ".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
                 await _stream.ConnectAsync(15_000, ct);
+
+                // Reconnect: do NOT replay the pre-restart backlog. Everything queued
+                // while disconnected describes a service/world state that no longer
+                // exists (stale foreground/browser/pin snapshots); drain it so the
+                // fresh service session is not fed old state. The hello below plus a
+                // forced fresh foreground report re-establish current state.
+                lock (_sendLock)
+                {
+                    while (_outbound.Reader.TryRead(out _)) { }
+                }
 
                 _writer = new StreamWriter(_stream, new UTF8Encoding(false))
                 {
@@ -280,6 +291,21 @@ public sealed class PipeClient : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        try
+        {
+            // Join both loops before tearing down the stream/CTS: cancelling a pending
+            // Delay surfaces as OperationCanceledException, but if we disposed the
+            // stream/CTS first, a loop still inside Delay/read could throw an
+            // unobserved ObjectDisposedException.
+            Task.WaitAll(
+                new[] { _receiveLoop, _writerLoop }.Where(t => t is not null).Cast<Task>().ToArray(),
+                TimeSpan.FromSeconds(3));
+        }
+        catch (Exception)
+        {
+            // AggregateException from loop faults or the join timeout: shutdown races are fine
+        }
+
         _cts.Dispose();
         _stream?.Dispose();
     }

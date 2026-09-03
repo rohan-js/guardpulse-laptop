@@ -13,6 +13,7 @@ public partial class ToastWindow : Window
     public ToastWindow()
     {
         InitializeComponent();
+        Topmost = true;
         _hideTimer.Interval = TimeSpan.FromSeconds(6);
         _hideTimer.Tick += (_, _) => Dismiss();
     }

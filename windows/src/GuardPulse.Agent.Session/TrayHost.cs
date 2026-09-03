@@ -26,12 +26,12 @@ public sealed class TrayHost : IDisposable
     private readonly NotifyIcon _icon;
     private readonly Func<bool> _isLockVisible;
 
-    public TrayHost(Action onStatus, Action onDashboard, Action onExit)
+    public TrayHost(Action onStatus, Action onExit)
     {
         _isLockVisible = () => System.Windows.Application.Current.Windows
             .OfType<LockWindow>().Any(w => w.IsVisible);
 
-        var menu = BuildMenu(onStatus, onDashboard, onExit);
+        var menu = BuildMenu(onStatus, onExit);
 
         _icon = new NotifyIcon
         {
@@ -60,7 +60,7 @@ public sealed class TrayHost : IDisposable
         }
     }
 
-    private ContextMenuStrip BuildMenu(Action onStatus, Action onDashboard, Action onExit)
+    private ContextMenuStrip BuildMenu(Action onStatus, Action onExit)
     {
         var menu = new ContextMenuStrip
         {
@@ -93,17 +93,6 @@ public sealed class TrayHost : IDisposable
         };
         status.Click += (_, _) => onStatus();
         menu.Items.Add(status);
-
-        var dashboard = new ToolStripMenuItem
-        {
-            Text = "Open Dashboard",
-            ForeColor = OnSurface,
-            Font = new Font("Segoe UI", 9.5f),
-            AutoSize = false,
-            Height = 34
-        };
-        dashboard.Click += (_, _) => onDashboard();
-        menu.Items.Add(dashboard);
 
         menu.Items.Add(new ToolStripSeparator { BackColor = Separator, AutoSize = false, Height = 2 });
 
