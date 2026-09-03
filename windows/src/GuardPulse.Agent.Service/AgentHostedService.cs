@@ -175,7 +175,7 @@ public sealed class AgentHostedService(
 
             _ = RunSafeAsync("sync-start", () => EnsureSyncStartedAsync(_ct));
             _ = RunSafeAsync("inventory-initial", UploadInventoryAsync);
-            _ = RunSafeAsync("owner-recover", RecoverOwnerUidAsync);
+            _ = RunSafeAsync("owner-recover", EnsureOwnerUidAsync);
 
             // Start unlock/pair streams now that _firebase/_deviceId are wired.
             SubscribeToRealtimeStreams();
@@ -528,6 +528,10 @@ public sealed class AgentHostedService(
                     _pipeHost.BroadcastLock(_currentAppKey, LabelFor(_currentAppKey), helloReason);
                 }
             });
+            // The first hello can race owner-uid recovery (both start at service boot);
+            // if the uid is still unknown, retry in the background - its success path
+            // re-broadcasts, so the tray reflects reality without a pipe reconnect.
+            _ = RunSafeAsync("owner-recover-hello", EnsureOwnerUidAsync);
             _pipeHost.BroadcastPairedState(IsPaired);
         };
         _pipeHost.AdminStateReceived += (session, isAdmin) => RunSafe("admin-state", () => OnAdminStateReceived(session, isAdmin));
@@ -2004,6 +2008,50 @@ var minutes = ms / 60_000L;
         }
     }
 
+    // Throttled self-heal for a lost owner uid: startup recovery is best-effort and
+    // runs concurrently with the first agent hello, so the tray (pairedState) and the
+    // users/{uid} presence mirror can both go stale if it fails once. Retries at most
+    // every 5 minutes and re-broadcasts the paired state on success so the tray hides
+    // without waiting for a pipe reconnect.
+    private const long OwnerRecoverThrottleMs = 5 * 60_000;
+    private long _lastOwnerRecoverAttemptMs;
+    private int _ownerRecoverInFlight;
+
+    private async Task EnsureOwnerUidAsync()
+    {
+        if (!string.IsNullOrEmpty(_ownerUid))
+        {
+            return;
+        }
+
+        var now = NowMs();
+        if (Volatile.Read(ref _ownerRecoverInFlight) == 1
+            || Interlocked.Read(ref _lastOwnerRecoverAttemptMs) > now - OwnerRecoverThrottleMs)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _ownerRecoverInFlight, 1);
+        try
+        {
+            Interlocked.Exchange(ref _lastOwnerRecoverAttemptMs, now);
+            await RecoverOwnerUidAsync();
+            if (!string.IsNullOrEmpty(_ownerUid))
+            {
+                _logger.LogInformation("Owner uid recovered; broadcasting paired state");
+                _pipeHost.BroadcastPairedState(IsPaired);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Owner uid recovery attempt failed");
+        }
+        finally
+        {
+            Volatile.Write(ref _ownerRecoverInFlight, 0);
+        }
+    }
+
     // Single-flight guard: the pair-request SSE stream and the 5s boundary poll can
     // both fire for the same pending request; only one may process it at a time.
     private int _pairRequestInFlight;
@@ -2156,6 +2204,8 @@ var minutes = ms / 60_000L;
         var healthy = _pipeHost.ConnectedAgents > 0;
         var pinConfigured = _syncEngine.LastValidSnapshot?.Pin is not null;
 
+        // Each write is isolated: one failing node must not skip the others (a
+        // sync/runtime failure used to strand the users/{uid} presence mirror too).
         var heartbeat = new JsonObject
         {
             ["online"] = true,
@@ -2163,7 +2213,14 @@ var minutes = ms / 60_000L;
             ["enforcementMode"] = PolicyConstants.ENFORCEMENT_FALLBACK,
             ["protectionHealthy"] = healthy
         };
-        await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId), heartbeat.ToJsonString(JsonOpts), _ct);
+        try
+        {
+            await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId), heartbeat.ToJsonString(JsonOpts), _ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Heartbeat write failed");
+        }
 
         var runtime = new JsonObject
         {
@@ -2174,7 +2231,14 @@ var minutes = ms / 60_000L;
             ["sessionId"] = _syncEngine.SessionId,
             ["protocolVersion"] = 2
         };
-        await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), runtime.ToJsonString(JsonOpts), _ct);
+        try
+        {
+            await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), runtime.ToJsonString(JsonOpts), _ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "sync/runtime heartbeat write failed");
+        }
 
         var security = new JsonObject
         {
@@ -2184,9 +2248,19 @@ var minutes = ms / 60_000L;
             ["platform"] = PolicyConstants.PLATFORM_WINDOWS,
             ["updatedAt"] = Sv()
         };
-        await _firebase.PatchAsync(FirebasePaths.DeviceSecurityRuntime(_deviceId), security.ToJsonString(JsonOpts), _ct);
+        try
+        {
+            await _firebase.PatchAsync(FirebasePaths.DeviceSecurityRuntime(_deviceId), security.ToJsonString(JsonOpts), _ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "security/runtime write failed");
+        }
 
         // Mirror online status onto the parent's device list (same as the TV agent).
+        // Empty owner uid means startup recovery failed or pairing landed after it:
+        // retry (throttled) so the phone's device entry does not go permanently stale.
+        await EnsureOwnerUidAsync();
         var ownerUid = _ownerUid;
         if (!string.IsNullOrEmpty(ownerUid))
         {
@@ -2198,7 +2272,14 @@ var minutes = ms / 60_000L;
                 ["enforcementMode"] = PolicyConstants.ENFORCEMENT_FALLBACK,
                 ["protectionHealthy"] = healthy
             };
-            await _firebase.PatchAsync(FirebasePaths.UserDevice(ownerUid, _deviceId), userDevice.ToJsonString(JsonOpts), _ct);
+            try
+            {
+                await _firebase.PatchAsync(FirebasePaths.UserDevice(ownerUid, _deviceId), userDevice.ToJsonString(JsonOpts), _ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "users/{uid}/devices presence mirror write failed");
+            }
         }
     }
 

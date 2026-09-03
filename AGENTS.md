@@ -1,4 +1,4 @@
-# AGENTS.md — Coding Agent Guide for GuardPulse Laptop
+﻿# AGENTS.md — Coding Agent Guide for GuardPulse Laptop
 
 > Companion to `PROJECT_CONTEXT.md`. Read that first for full context; read this for behavioral rules, command cheat-sheets, and definition-of-done.
 
@@ -72,15 +72,14 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ---
 
-## 6. CURRENT STATE (as of 2026-09-03 — 0.2.13)
+## 6. CURRENT STATE (as of 2026-09-03 — 0.2.14)
 
-* Head: `43facc7` on `origin/main`. **Local web dashboard + hosted console removed** (user requirement — the parent phone app is the only remote control). All remote control flows through the phone app via Firebase RTDB; `control/v2` rules are owner-only (the device `tvUid` write arm was dropped with the dashboard).
-* **Unpair mystery fixed:** Firebase token refresh fell through to anonymous sign-up on ANY refresh failure (5xx/429), minting a new uid and orphaning the pairing — now only signs up on definitive invalid-token rejection, network failures retry with identity preserved. DPAPI writes fsync before rename; empty-but-decryptable primary consults the machine mirror. Phone-side remove is two-phase ("waiting for laptop" until confirmed).
-* **Install this:** `windows/installer/Output/DeviceServiceSetup-0.2.13.exe` (admin), then **re-pair from the phone** (pairing is currently dead — old identity orphaned).
-* Paired device: `52053ba0dd844b3b9c46fbbcaaf9e2c7` (active), legacy `4f2dde5e337243c68c66d33d6982dfaa`.
-* Policy cache clean: only the 10 default-locked bypass/settings entries; no schedule/budget/filter/allowlist active.
-* Windows tests green: 133 Protocol + 88 Core (221 total). Parent APK builds; shared/parent JVM tests green.
-* Firebase rules deployed live to `guardpulse-laptop-control`.
+* Head: 0.2.13 (`43facc7` + `2eee9d0`) then **0.2.14 hotfix**. 0.2.13 regression: the heartbeat started writing the real `IsStreamConnected` flag, but RTDB over REST has NO `.info/connected` events (attach value is `null`; rules deny the path) — the flag was permanently false, so the phone showed "Laptop connection: Offline" while everything worked. 0.2.14 derives liveness from real SSE traffic (keep-alives every ~30s; 75s alive window) and removes the dead `.info/connected` subscription.
+* Also fixed in 0.2.14 (same root): the `users/{uid}/devices/{id}` presence mirror was stale since pairing and the tray icon stayed visible after pairing — both caused by an empty in-memory `_ownerUid` (one-shot best-effort startup recovery). Now self-heals: throttled retry (5 min) from the heartbeat + agent hello, re-broadcasting paired state on success; heartbeat PATCHes are independently error-isolated.
+* **Install this:** `windows/installer/Output/DeviceServiceSetup-0.2.14.exe` (admin), then **re-pair from the phone** (pairing is currently dead — old identity orphaned).
+* Paired device: `129b2e39670b44ebadb305a7bd91b6b9` (this machine, DESKTOP-4ILVI11). Legacy ids `52053ba0…`/`4f2dde5e…` are orphans.
+* Windows tests green: 133 Protocol + 93 Core (226 total).
+* Firebase rules deployed live to `guardpulse-laptop-control` (unchanged by 0.2.14 — no new keys).
 
 ---
 
@@ -125,7 +124,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 221 passing (133 Protocol + 88 Core)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 226 passing (133 Protocol + 93 Core)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)

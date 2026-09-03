@@ -1,9 +1,9 @@
-; GuardPulse Laptop — Inno Setup installer
+﻿; GuardPulse Laptop — Inno Setup installer
 ; Replaces install.ps1: bundles the merged ReadyToRun payload, collects Firebase
 ; credentials in the wizard, and configures the service, Safe Boot keys, ACLs,
 ; and Run-key fallback — all elevated, all silent.
 
-#define AppVersion "0.2.13"
+#define AppVersion "0.2.14"
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"
 

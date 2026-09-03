@@ -26,7 +26,11 @@ public sealed class SyncEngine
     // (5s) while degraded so a parent lock lands in seconds; skipped entirely while
     // the stream is confirmed healthy - SSE pushes make the poll redundant there.
     private const int ControlPollIntervalMs = 5_000;
-    private static readonly TimeSpan SseHealthyWindow = TimeSpan.FromSeconds(10);
+    // How long after the last received SSE line (data frame OR keep-alive; RTDB sends
+    // keep-alives every ~30s) the stream is considered alive. Must exceed the
+    // keep-alive period, or a healthy-but-idle stream would look dead and trigger
+    // endless redundant polling.
+    private static readonly TimeSpan StreamAliveWindow = TimeSpan.FromSeconds(75);
     // Bounded retries for the sync/applied ack so a transient PATCH failure (rules or
     // transport) never strands the parent on "Waiting for laptop" forever.
     private const int AckMaxAttempts = 3;
@@ -57,11 +61,12 @@ public sealed class SyncEngine
     private long _serverOffsetMs;
     private int _dispatchGeneration;
     private bool _started;
-    private int _streamConnected; // 1 while .info/connected last reported true
+    // Ticks (DateTime.UtcNow-based) of the last received SSE line across the engine's
+    // device streams. RTDB over REST has NO .info/connected events (the attach value is
+    // null and rules deny that path), so stream liveness is derived from actual traffic:
+    // keep-alives every ~30s while idle, data pushes when anything changes.
+    private long _lastStreamFrameTicks;
     private DeviceRegistrar? _registrar;
-    // Last time the .info/connected stream confirmed connectivity; gates the
-    // control catch-up poll (redundant while the push stream is healthy).
-    private DateTime _lastStreamHealthyUtc = DateTime.MinValue;
 
     public SyncEngine(IFirebaseClient firebase, ISecretStore secrets, string deviceId, TimeProvider time)
     {
@@ -132,11 +137,19 @@ public sealed class SyncEngine
     public string? OwnerUid => _registrar?.OwnerUid;
 
     /// <summary>
-    /// True while the .info/connected stream last reported connectivity (or it flipped
-    /// positive and no negative report arrived since). Reflects real SSE stream health
-    /// for the heartbeat's sync/runtime write; false before the first connect event.
+    /// True while an SSE line (data or keep-alive) arrived within the alive window.
+    /// Feeds the heartbeat's sync/runtime write: the phone's sync-health card must
+    /// show a dead stream as disconnected, and a live-but-idle one as connected.
     /// </summary>
-    public bool IsStreamConnected => Volatile.Read(ref _streamConnected) == 1;
+    public bool IsStreamConnected
+    {
+        get
+        {
+            var last = Interlocked.Read(ref _lastStreamFrameTicks);
+            return last != 0
+                && _time.GetUtcNow().UtcDateTime - new DateTime(last, DateTimeKind.Utc) <= StreamAliveWindow;
+        }
+    }
 
     /// <summary>Fired when a VALID snapshot should be enforced; the host then calls NotifyEnforcementAppliedAsync.</summary>
     public event Action<ControlSnapshotV2>? ControlApplied;
@@ -152,8 +165,6 @@ public sealed class SyncEngine
 
     /// <summary>Raw JSON of the devices/{id}/commands node (value-event semantics).</summary>
     public event Action<string>? CommandReceived;
-
-    public event Action<bool>? ConnectionChanged;
 
     /// <summary>Authenticates, registers the device and attaches the value streams.</summary>
     public async Task StartAsync(CancellationToken ct)
@@ -197,11 +208,12 @@ public sealed class SyncEngine
             // registration is best-effort (Kotlin registerDevice is fire-and-forget)
         }
 
-        StartStream(".info/connected", HandleConnectedData, ct);
         // Targeted child streams instead of one device-root stream: the root re-delivered
         // the ENTIRE device node on every self-write (heartbeat, state upload, sync acks),
         // forcing a full re-download + reparse 2-6x/min. Child streams only deliver what
         // the agent actually consumes; self-writes to state/heartbeat/sync produce no echo.
+        // Their onActivity callbacks double as the liveness source for IsStreamConnected
+        // (keep-alives arrive every ~30s even when nothing changes).
         // PairRequests stays separate (only while unpaired; broad auth fan-out), and
         // unlockRequests already has its own stream in the host.
         StartStream(FirebasePaths.DeviceControlV2(_deviceId), HandleControlData, ct);
@@ -481,7 +493,8 @@ public sealed class SyncEngine
                 path,
                 onData,
                 error => StreamError?.Invoke(path, error),
-                ct);
+                ct,
+                onActivity: NoteStreamActivity);
             lock (_gate)
             {
                 _streams.Add(stream);
@@ -538,9 +551,9 @@ public sealed class SyncEngine
                 return;
             }
 
-            // SSE confirmed healthy recently? The stream pushes every change
-            // instantly - a GET now would be redundant traffic. Skip this tick.
-            if (_time.GetUtcNow().UtcDateTime - _lastStreamHealthyUtc < SseHealthyWindow)
+            // Stream alive (keep-alives/data within the alive window)? Pushes deliver
+            // every change instantly - a GET now would be redundant traffic. Skip.
+            if (IsStreamConnected)
             {
                 continue;
             }
@@ -561,72 +574,11 @@ public sealed class SyncEngine
         }
     }
 
-    private void HandleConnectedData(string? raw)
+    /// <summary>Records a received SSE line (data frame or keep-alive) as proof of stream
+    /// liveness. Called from the firebase client's onActivity callback.</summary>
+    public void NoteStreamActivity()
     {
-        if (raw == null || !bool.TryParse(raw.Trim(), out var connected))
-        {
-            return;
-        }
-
-        if (connected)
-        {
-            _lastStreamHealthyUtc = _time.GetUtcNow().UtcDateTime;
-            Volatile.Write(ref _streamConnected, 1);
-            lock (_gate)
-            {
-                SessionId = Guid.NewGuid().ToString("D");
-            }
-
-            ConnectionChanged?.Invoke(true);
-            _ = WriteRuntimeAsync(connected: true);
-        }
-        else
-        {
-            Volatile.Write(ref _streamConnected, 0);
-            ConnectionChanged?.Invoke(false);
-            _ = WriteRuntimeAsync(connected: false);
-        }
-    }
-
-    private async Task WriteRuntimeAsync(bool connected)
-    {
-        try
-        {
-            if (connected)
-            {
-                try
-                {
-                    _serverOffsetMs = await _firebase.FetchServerTimeOffsetMsAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // keep cached offset
-                }
-            }
-
-            JsonObject payload = connected
-                ? new JsonObject
-                {
-                    ["connected"] = true,
-                    ["sessionId"] = SessionId,
-                    ["protocolVersion"] = PolicyConstants.SYNC_PROTOCOL_VERSION,
-                    ["connectedAt"] = ServerTimestamp(),
-                    // No connectedVia: the deployed sync/runtime rules whitelist rejects
-                    // unknown keys ($other:false), so including it failed every connect
-                    // write and left sessionId/connected stale until the next heartbeat.
-                }
-                : new JsonObject
-                {
-                    ["connected"] = false,
-                    ["disconnectedAt"] = ServerTimestamp(),
-                };
-
-            await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), payload.ToJsonString(), CancellationToken.None).ConfigureAwait(false);
-        }
-        catch
-        {
-            // runtime presence is best-effort; the next connect replay rewrites it
-        }
+        Interlocked.Exchange(ref _lastStreamFrameTicks, _time.GetUtcNow().UtcDateTime.Ticks);
     }
 
     private void HandleControlData(string? raw)

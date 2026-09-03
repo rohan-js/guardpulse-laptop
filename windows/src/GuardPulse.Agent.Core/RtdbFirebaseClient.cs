@@ -33,8 +33,11 @@ public interface IFirebaseClient : IDisposable
     /// SSE value stream. onData receives the raw JSON of the node (null after the
     /// node was deleted). Reconnects with exponential backoff 5s..5min and
     /// resubscribes until the disposable is disposed or the token cancels.
+    /// onActivity (optional) fires once per received line — including keep-alives —
+    /// and right after a successful connect, proving the stream is alive even when
+    /// no data changes; RTDB SSE has no .info/connected over REST.
     /// </summary>
-    Task<IDisposable> StreamAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct);
+    Task<IDisposable> StreamAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct, Action? onActivity = null);
 
     /// <summary>GET .info/serverTimeOffset (milliseconds).</summary>
     Task<long> FetchServerTimeOffsetMsAsync(CancellationToken ct);
@@ -234,12 +237,12 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
         return 0;
     }
 
-    public Task<IDisposable> StreamAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct)
+    public Task<IDisposable> StreamAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct, Action? onActivity = null)
     {
         ArgumentNullException.ThrowIfNull(onData);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _ = Task.Run(
-            () => RunStreamLoopAsync(path, onData, onError, cts.Token),
+            () => RunStreamLoopAsync(path, onData, onError, cts.Token, onActivity),
             CancellationToken.None);
         return Task.FromResult<IDisposable>(new StreamHandle(cts));
     }
@@ -510,7 +513,7 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
 
     // ------------------------------------------------------------------ sse
 
-    private async Task RunStreamLoopAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct)
+    private async Task RunStreamLoopAsync(string path, Action<string?> onData, Action<Exception> onError, CancellationToken ct, Action? onActivity)
     {
         var retryDelayMs = InitialRetryMs;
         while (!ct.IsCancellationRequested)
@@ -549,9 +552,10 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
                     }
 
                     retryDelayMs = InitialRetryMs;
+                    onActivity?.Invoke(); // HTTP 200 + stream content type: connected
                     using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                     using var reader = new StreamReader(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-                    await ReadSseFramesAsync(reader, path, onData, ct).ConfigureAwait(false);
+                    await ReadSseFramesAsync(reader, path, onData, ct, onActivity).ConfigureAwait(false);
                 }
 
                 // Server closed the stream (Firebase does this periodically); reconnect.
@@ -579,7 +583,7 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
         }
     }
 
-    private async Task ReadSseFramesAsync(StreamReader reader, string path, Action<string?> onData, CancellationToken ct)
+    private async Task ReadSseFramesAsync(StreamReader reader, string path, Action<string?> onData, CancellationToken ct, Action? onActivity)
     {
         JsonNode? root = null;
         string? eventName = null;
@@ -607,6 +611,9 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
             {
                 return; // stream ended; caller reconnects
             }
+
+            // Any received line — data frame or keep-alive — proves the stream is alive.
+            onActivity?.Invoke();
 
             if (line.Length == 0)
             {
