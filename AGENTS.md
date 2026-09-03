@@ -72,13 +72,14 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ---
 
-## 6. CURRENT STATE (as of last update)
+## 6. CURRENT STATE (as of 2026-09-03 — 0.2.13)
 
-* All planned phases shipped. Laptop repo pushed to `origin/main` through `553030d` (Win+D) / `a0be1ac` (minimize) / `ac7c047` (hostile+removal) / `4079413` (custom sites) / `2fb5f4c` (installer); tag `v0.2.0` → `23511f8`.
-* Live service not installed on this machine after full uninstall (clean: no service, no `C:/Program Files*/Device Service`, no `C:/ProgramData/GuardPulse`). Last installed bits were `553030d` (minimize+Win+D) via built `GuardPulseLaptopSetup-0.2.0.exe` (49.9 MB) in `windows/installer/Output/`.
+* Head: `43facc7` on `origin/main`. **Local web dashboard + hosted console removed** (user requirement — the parent phone app is the only remote control). All remote control flows through the phone app via Firebase RTDB; `control/v2` rules are owner-only (the device `tvUid` write arm was dropped with the dashboard).
+* **Unpair mystery fixed:** Firebase token refresh fell through to anonymous sign-up on ANY refresh failure (5xx/429), minting a new uid and orphaning the pairing — now only signs up on definitive invalid-token rejection, network failures retry with identity preserved. DPAPI writes fsync before rename; empty-but-decryptable primary consults the machine mirror. Phone-side remove is two-phase ("waiting for laptop" until confirmed).
+* **Install this:** `windows/installer/Output/DeviceServiceSetup-0.2.13.exe` (admin), then **re-pair from the phone** (pairing is currently dead — old identity orphaned).
 * Paired device: `52053ba0dd844b3b9c46fbbcaaf9e2c7` (active), legacy `4f2dde5e337243c68c66d33d6982dfaa`.
 * Policy cache clean: only the 10 default-locked bypass/settings entries; no schedule/budget/filter/allowlist active.
-* Windows tests green: 133 Protocol + 57 Core. Parent APK builds; shared/parent JVM tests green.
+* Windows tests green: 133 Protocol + 88 Core (221 total). Parent APK builds; shared/parent JVM tests green.
 * Firebase rules deployed live to `guardpulse-laptop-control`.
 
 ---
@@ -124,7 +125,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 190 passing (133 Protocol + 57 Core)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 221 passing (133 Protocol + 88 Core)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)

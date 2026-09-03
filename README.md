@@ -266,7 +266,7 @@ The build verifies the signing certificate SHA-256 before compilation. Publishin
 3. Sign in with Firebase email/password authentication.
 4. Pair a laptop using the QR payload or manual pairing details shown in the laptop setup window (`%ProgramData%\GuardPulse\Laptop\device.json`).
 5. Set a 6-digit parent PIN in the Security tab.
-6. Control app locks, daily limits, workbook controls (Allowed Hours, Daily Budget, Content Filtering, Allowlist Mode), One-Tap Modes, Safe Mode, and unlock approvals from the dashboard.
+6. Control app locks, daily limits, workbook controls (Allowed Hours, Daily Budget, Content Filtering, Allowlist Mode), One-Tap Modes, Safe Mode, and unlock approvals from the parent phone app.
 
 Install helper:
 

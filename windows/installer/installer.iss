@@ -60,11 +60,11 @@ Type: filesandordirs; Name: "{app}"
 ; leaving this folder behind let a duplicate session start at every logon and
 ; crash on the single-instance mutex.
 Type: filesandordirs; Name: "{commonpf64}\Device Service"
-; Dashboard shortcuts created at install time (all-users + legacy per-user copy).
+; Stale dashboard shortcuts from pre-0.2.13 installs (the local web dashboard is
+; removed; nothing creates these anymore — this only cleans them up).
 Type: files; Name: "{commondesktop}\GuardPulse Dashboard.url"
 Type: files; Name: "{commonprograms}\GuardPulse\Dashboard.url"
 Type: files; Name: "{userdesktop}\GuardPulse Dashboard.url"
-
 [Dirs]
 Name: "{commonappdata}\GuardPulse\Laptop\logs"
 ; Hide the app folder so Explorer doesn't advertise it (same trick Windows uses
@@ -241,31 +241,18 @@ begin
   Exec(Icacls, Format('"%s\logs" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)"', [StateRoot]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-procedure ReserveDashboardUrl;
+procedure CleanupStaleDashboardArtifacts;
 var
   ResultCode: Integer;
   Url: string;
 begin
-  // The per-user session agent serves the dashboard via HttpListener on
-  // http://127.0.0.1:37841/. Reserve the URL ACL so a non-elevated bind succeeds.
+  // The local web dashboard was removed in 0.2.13. Older installs reserved this
+  // URL ACL and dropped browser shortcuts for it: delete the stale reservation
+  // (result ignored — absent is the desired state) and remove leftover .url files.
   Url := 'http://127.0.0.1:37841/';
   Exec(ExpandConstant('{sys}\netsh.exe'), Format('http delete urlacl url=%s', [Url]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\netsh.exe'), Format('http add urlacl url=%s user=Everyone', [Url]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if ResultCode <> 0 then
-    MsgBox('Failed to reserve the dashboard URL (netsh). The dashboard may be unavailable until the URL ACL is added manually.', mbError, MB_OK);
-end;
-
-procedure CreateDashboardShortcuts;
-var
-  DesktopShortcut, StartShortcut, Content: string;
-begin
-  // Mirror install.ps1: drop .url shortcuts that open the dashboard in the browser.
-  Content := '[InternetShortcut]' + #13#10 + 'URL=http://127.0.0.1:37841/' + #13#10;
-  DesktopShortcut := ExpandConstant('{commondesktop}\GuardPulse Dashboard.url');
-  StartShortcut := ExpandConstant('{commonprograms}\GuardPulse\Dashboard.url');
-  CreateDir(ExtractFilePath(StartShortcut));
-  SaveStringToFile(DesktopShortcut, Content, False);
-  SaveStringToFile(StartShortcut, Content, False);
+  DeleteFile(ExpandConstant('{commondesktop}\GuardPulse Dashboard.url'));
+  DeleteFile(ExpandConstant('{commonprograms}\GuardPulse\Dashboard.url'));
 end;
 
 procedure HideUninstaller;
@@ -412,8 +399,7 @@ begin
     begin
       GenerateAgentConfig;
       ApplyStateDirectoryAcls;
-      ReserveDashboardUrl;
-      CreateDashboardShortcuts;
+      CleanupStaleDashboardArtifacts;
 
       // Configure service via sc.exe
       Exec(ExpandConstant('{sys}\sc.exe'),

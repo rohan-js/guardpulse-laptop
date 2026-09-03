@@ -242,11 +242,6 @@ public partial class App : Application
                     var toastMsg = message.TryGetProperty("message", out var tm) ? tm.GetString() ?? "" : "";
                     ToastWindow.ShowToast(toastTitle, toastMsg);
                     break;
-                case "dataChanged":
-                    // Control applied / usage written / unlock request / tamper event for a
-                    // device: wake open console tabs watching it (SSE event stream).
-                    var changedDevice = message.TryGetProperty("deviceId", out var dc) ? dc.GetString() : null;
-                    break;
             }
         });
     }

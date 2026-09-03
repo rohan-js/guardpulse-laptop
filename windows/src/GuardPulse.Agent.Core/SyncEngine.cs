@@ -770,8 +770,7 @@ public sealed class SyncEngine
             // Desired and control can arrive a few SSE frames apart; wait for the
             // matching desired revision before acknowledging (TV "revision settle") —
             // but only when the desired actually belongs to this control arrival. A
-            // desired that predates the pending snapshot (e.g. after a dashboard or
-            // agent write, which never updates sync/desired) is stale and would
+            // desired that predates the pending snapshot is stale and would
             // otherwise burn the whole settle window (~1s) on every such write.
             if (ShouldWaitForDesired(desired, snapshot.RevisionId, desiredGen, controlGen))
             {
@@ -816,8 +815,8 @@ public sealed class SyncEngine
     /// <summary>
     /// True only when a desired revision arrived after the pending control (a parent
     /// write still in flight whose two SSE frames may land apart). A desired that
-    /// predates the pending control is stale — dashboard/agent writes never touch
-    /// sync/desired — and waiting for it would delay every such apply by ~1s.
+    /// predates the pending control is stale — and waiting for it would delay
+    /// every such apply by ~1s.
     /// </summary>
     internal static bool ShouldWaitForDesired(
         SyncDesiredRevision? desired, string snapshotRevisionId, long desiredGeneration, long controlGeneration)

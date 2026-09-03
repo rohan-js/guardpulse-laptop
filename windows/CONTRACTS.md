@@ -1,4 +1,4 @@
-# GuardPulse Laptop Windows Agent — Shared Contracts
+﻿# GuardPulse Laptop Windows Agent — Shared Contracts
 
 This file is the single source of truth for cross-project contracts.
 All agents MUST code against exactly these signatures. Do not rename or move.
@@ -213,85 +213,16 @@ Service -> agent broadcasts (in addition to lock/unlock/pinState/openSetup/activ
 ```json
 {"t":"pairedState","paired":true}                // paired/unpaired transitions (tray icon)
 {"t":"warningToast","title":"...","message":"..."} // one-off warnings (e.g. admin child detected)
-{"t":"dataChanged","deviceId":"..."}             // device data changed (control applied, usage written,
-                                                 //   unlock request, tamper event); the session agent
-                                                 //   forwards this to the dashboard's SSE event stream
 ```
 Agent -> service request/reply messages (each request carries `"req":"<guid>"`; the
 service replies with the same `req` and the matching `t` in the envelope):
 ```json
-{"t":"controlGet","req":"..."}                                  -> {"t":"controlState","req":"...","ok":true,"state":{...}}
-{"t":"controlLogin","req":"...","pin":"123456"}                 -> {"t":"controlLoginResult","req":"...","ok":true}   // rate-limited (PinRetryGate)
-{"t":"controlWrite","req":"...","patch":{...}}                  -> {"t":"controlResult","req":"...","ok":true,"revisionId":"..."}
-{"t":"controlUnlock","req":"...","appKey":"...","type":"oneVisit|timed","durationMs":900000} -> {"t":"controlResult",...}
-{"t":"ownerLogin","req":"...","email":"...","password":"..."}   -> {"t":"ownerLoginResult","req":"...","ok":true,"ownerUid":"...","devices":[...]}
-{"t":"listDevices","req":"..."}                                 -> {"t":"deviceList","req":"...","ok":true,"devices":[...]}
-{"t":"deviceState","req":"...","deviceId":"..."}                -> {"t":"controlState","req":"...","ok":true,"state":{...}}
-{"t":"deviceWrite","req":"...","deviceId":"...","patch":{...}}  -> {"t":"controlResult","req":"...","ok":true,"revisionId":"..."}
-{"t":"deviceUnlock","req":"...","deviceId":"...","appKey":"...","type":"...","durationMs":...} -> {"t":"controlResult",...}
-{"t":"deviceCommand","req":"...","deviceId":"...","type":"rescanApps|resetToday|unpair|openSetup","packageName":"..."} -> {"t":"controlResult",...}
-{"t":"devicePin","req":"...","deviceId":"...","pin":"123456"}   -> {"t":"controlResult",...}
-{"t":"deviceUnlockRespond","req":"...","deviceId":"...","requestId":"...","action":"approveOneVisit|approve15|approve30|deny"} -> {"t":"controlResult",...}
+{"t":"deviceInfo","req":"..."} -> {"t":"deviceInfo","req":"...","ok":true,"deviceId":"...","secret":"...","code":"..."}
 ```
-`revisionId` in a controlResult is the fresh revision the write produced — the console
-shows "waiting for device" until `sync/applied.revisionId` matches it. Writes that the
-control parser would silently drop (mode with blank name/key mismatch, unknown activeMode
-id) return `ok:false` with an explanatory error instead of writing nothing.
-All `controlState` envelopes embed the same `state` DTO as `/api/device/{id}/state` (see HTTP API below).
-
-## HTTP API (loopback dashboard), served by the session agent on `http://127.0.0.1:37841/`
-
-HTML page at `/`. All `/api/*` responses are JSON `{ok,...}`; API responses are `Cache-Control: no-store`
-and carry `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and a `Content-Security-Policy`.
-Mutating routes accept POST ONLY (405 otherwise — SameSite=Lax cookies ride top-level GET navigations).
-Request bodies are capped at 1 MB.
-
-Local quick control (PIN-gated by `gp_dash_token` cookie, set by `/api/login`; PIN login is rate-limited):
-```text
-GET  /api/state                    -> the local control state DTO (no auth; read-only)
-POST /api/login      {pin}         -> 200 + Set-Cookie gp_dash_token (HttpOnly; SameSite=Lax; Max-Age 86400)
-POST /api/logout                   -> 200 {ok} (revokes the gp_dash_token server-side)
-POST /api/control    {patch}       -> deep-merge patch into this device's control/v2; -> {ok,revisionId}
-POST /api/unlock     {appKey,type,durationMs} -> grant a local one-visit/timed unlock
-GET  /api/events?device=local  (or ?device={deviceId} with the owner cookie)
-                                   -> text/event-stream; `event: state` frames carrying the state
-                                      DTO; pushed on service dataChanged pulses + a 10s heartbeat
-```
-Parent console (owner; all require the `gp_owner_token` cookie set by `/api/owner/login`):
-```text
-POST /api/owner/login     {email,password}                    -> 200 {ok,ownerUid,devices:[{deviceId,label,online,lastSeen,platform,enforcementMode,protectionHealthy}]} + Set-Cookie gp_owner_token
-POST /api/owner/logout                                         -> 200 {ok} (server-side token revoked)
-GET  /api/devices                                              -> {ok,devices:[...]}
-GET  /api/device/{id}/state                                    -> {ok,state}  (control/v2 + usage + sync status)
-POST /api/device/{id}/control {patch}                          -> {ok,revisionId}
-POST /api/device/{id}/unlock  {appKey,type,durationMs}         -> {ok} (approves the child's pending unlock request; NOT
-                                                                    exposed in the remote console UI — remote unlocks are
-                                                                    request approvals only, matching the phone app)
-POST /api/device/{id}/command {type,packageName?}              -> {ok} (rescanApps | resetToday | unpair | openSetup)
-POST /api/device/{id}/pin     {pin}                            -> {ok} (set/change the device PIN)
-POST /api/device/{id}/unlock-respond {requestId,action}        -> {ok} (approveOneVisit | approve15 | approve30 | deny)
-```
-State DTO (both local and remote): `deviceId,label,online,lastSeen,thisDevice,paired,pinConfigured,
-apps[{key,packageName,label,blocked,dailyLimitMinutes,blockable,protectedReason}],inventory (local only),
-modes[{modeId,name,createdAt,updatedAt,appCount,apps[{key,packageName,label,blocked,dailyLimitMinutes}]}],
-activeModeId,activeModeName,safeMode{enabled,until,startedAt},budgetMinutes,allowlistEnabled,
-customDomains[],usage[{key,label,minutes,ms,lockBlocked}],browser,serverNow,controlRevisionId,
-enforcementMode,protectionHealthy,syncStatus,syncAppliedAt,syncRevisionId,pendingUnlocks[],tamperEvents[]`.
-`browser` (nullable): the live tab snapshot the agent last reported, mirrored from
-`devices/{id}/state/browser` — `{browser,label,activeTab,activeUrl?,tabCount,
-tabs[{title,url?}],domainsToday{b64url(domain):ms},updatedAt}`; absent when no browser was
-seen this session. Same shape in Firebase under `devices/{id}/state/browser` (agent-written,
-tvUid-only; `domainsToday` keys are base64url because RTDB keys cannot contain '.').
-`apps[]` is the phone-parity merge: EVERY app in the device's inventory (`devices/{id}/apps`) is
-listed (label from the inventory), with the control policy overlaid where a rule exists — apps
-without a rule are `blocked:false`; `protectedReason` marks non-blockable entries (the UI shows
-"Protected" and disables Block). Sorted by label.
-`serverNow` is the agent's server-time estimate — the console uses it for all deadlines
-(safe-mode countdown, request expiry) instead of the browser clock.
-
-Owner security: credentials travel only over the local pipe; the owner refresh token persists in the
-DPAPI secret store (`auth.ownerRefreshToken`) scoped to the service account; console endpoints require
-the owner cookie; owner sign-in is rate-limited (5 failures in 5 min blocks 1-15 min, doubling).
+`deviceInfo` serves the pairing credentials (deviceId + DPAPI-held secret + manual
+code) to the session agent's setup window for the QR code. All remote control flows
+through the parent phone app via Firebase RTDB — there is no local HTTP dashboard
+(removed in 0.2.13) and no owner-console pipe handlers.
 
 ## Config file (installer copies next to binaries): `agent-config.json`
 ```json

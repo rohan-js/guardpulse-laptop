@@ -1,4 +1,4 @@
-// AgentHostedService: the integrator. Loads config, prepares the state directory and
+﻿// AgentHostedService: the integrator. Loads config, prepares the state directory and
 // device identity, wires all Core components (firebase client, sync engine, ledger,
 // activity log, enforcement, unlocks, inventory, pairing) plus the pipe host, watchdog
 // and process suspender, and runs all periodic loops:
@@ -97,8 +97,6 @@ public sealed class AgentHostedService(
     private ProcessSuspender _suspender = null!;
     private Watchdog _watchdog = null!;
     private PinRetryGate _pinRetry = null!;
-    private PinRetryGate _dashboardLoginRetry = null!;
-    private PinRetryGate _ownerLoginRetry = null!;
     private string _deviceId = "";
     private string _agentAppKey = "";
     private string? _ownerUid;
@@ -429,10 +427,6 @@ public sealed class AgentHostedService(
         }
 
         _pinRetry = new PinRetryGate(_time, Path.Combine(_stateDir, "pin-retry.json"));
-        // Separate gate from the lock-overlay PIN path: HTTP brute-force attempts must
-        // not lock the child out of the overlay (and vice versa), while both stay bounded.
-        _dashboardLoginRetry = new PinRetryGate(_time);
-        _ownerLoginRetry = new PinRetryGate(_time);
         TrimWorkingSet(); // release JIT/startup pages; the loops allocate little
         _logger.LogInformation("Components wired for device {DeviceId}", _deviceId);
     }
@@ -900,77 +894,6 @@ var minutes = ms / 60_000L;
 
     /// <summary>Parses a device's uploaded inventory (devices/{id}/apps) for the console merge.</summary>
 
-    // --------------------------------------------------------- parent console (owner)
-
-    // ------------------------------------------------- device state cache (SSE)
-    private const long DeviceStateCacheTtlMs = 10_000;
-    private readonly object _deviceStateCacheLock = new();
-    private readonly Dictionary<string, (string Raw, long AtMs)> _deviceStateCache = new(StringComparer.Ordinal);
-
-    private bool TryGetCachedDeviceState(string deviceId, out string raw)
-    {
-        lock (_deviceStateCacheLock)
-        {
-            if (_deviceStateCache.TryGetValue(deviceId, out var hit)
-                && NowMs() - hit.AtMs < DeviceStateCacheTtlMs)
-            {
-                raw = hit.Raw;
-                return true;
-            }
-        }
-
-        raw = "";
-        return false;
-    }
-
-    private void CacheDeviceState(string deviceId, string raw)
-    {
-        lock (_deviceStateCacheLock)
-        {
-            if (_deviceStateCache.Count > 32)
-            {
-                _deviceStateCache.Clear(); // bounded; entries are cheap to rebuild
-            }
-
-            _deviceStateCache[deviceId] = (raw, NowMs());
-        }
-    }
-
-    private void InvalidateDeviceStateCache(string deviceId)
-    {
-        lock (_deviceStateCacheLock)
-        {
-            _deviceStateCache.Remove(deviceId);
-        }
-    }
-
-    private static string WrapCachedDeviceState(string req, string stateRaw)
-    {
-        var payload = new JsonObject
-        {
-            ["t"] = "controlState",
-            ["req"] = req,
-            ["ok"] = true,
-            ["state"] = JsonNode.Parse(stateRaw),
-        };
-        return payload.ToJsonString(JsonOpts);
-    }
-
-    /// <summary>Pulses the console's SSE event stream so open dashboards refresh immediately
-    /// (control applied, usage/state written, unlock requests, tamper events).</summary>
-    private void BroadcastDataChanged(string deviceId)
-    {
-        try
-        {
-            _pipeHost.BroadcastDataChanged(deviceId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "dataChanged broadcast failed");
-        }
-    }
-
-
     // ----------------------------------------------------------------- control
     private async Task HandleControlAppliedAsync(ControlSnapshotV2 snapshot)
     {
@@ -1008,7 +931,6 @@ var minutes = ms / 60_000L;
                     _logger.LogWarning(upEx, "State upload after apply failed for {RevisionId}", snapshot.RevisionId);
                 }
 
-                BroadcastDataChanged(_deviceId);
             });
         }
         catch (Exception ex)
@@ -1629,7 +1551,7 @@ var minutes = ms / 60_000L;
             ["reason"] = "askParent",
             ["status"] = PolicyConstants.UNLOCK_PENDING,
             ["createdAt"] = Sv(),
-            // Server clock, not the local one: the owner console filters pending
+            // Server clock, not the local one: the phone app filters pending
             // requests with ServerNowMs, so a skewed local clock could hide or
             // resurrect requests.
             ["expiresAt"] = _syncEngine.ServerNowMs() + 10 * 60_000L
@@ -1783,8 +1705,6 @@ var minutes = ms / 60_000L;
         _logger.LogInformation("Applied parent unlock for {AppKey} (type={Type}, durationMs={Duration})",
             appKey, approvalType, durationMs);
 
-        // The pending-requests list changed; wake any open console watching this device.
-        BroadcastDataChanged(_deviceId);
         EvaluateCurrentForeground();
     }
 
@@ -1843,7 +1763,7 @@ var minutes = ms / 60_000L;
                 continue;
             }
 
-            // TTL against the SERVER clock: createdAt is written by the owner console
+            // TTL against the SERVER clock: createdAt is written by the phone app
             // with server time, so a skewed laptop clock must not expire fresh commands
             // (or keep stale ones alive).
             var createdAt = GetLong(value, "createdAt");
@@ -2426,8 +2346,7 @@ var minutes = ms / 60_000L;
         if (changedStates.Count > 0)
         {
             await _firebase.PatchAsync(FirebasePaths.DeviceStateApps(_deviceId), changedStates.ToJsonString(JsonOpts), _ct);
-            // Usage/status changed; wake any open console watching this device.
-            BroadcastDataChanged(_deviceId);
+            // (usage/status upload; nothing further needed locally)
         }
 
         // Always kept fresh: the phone's Sync Health card reads this timestamp even
@@ -2558,7 +2477,6 @@ var minutes = ms / 60_000L;
         await _firebase.PatchAsync(FirebasePaths.DeviceStateBrowser(_deviceId), json, _ct);
         var runtime = new JsonObject { ["lastBrowserWriteAt"] = Sv() };
         await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), runtime.ToJsonString(JsonOpts), _ct);
-        BroadcastDataChanged(_deviceId);
     }
 
     private static JsonArray BuildTabsJson(IReadOnlyList<PipeBrowserTab> tabs)
@@ -2728,7 +2646,6 @@ var minutes = ms / 60_000L;
         };
         var path = FirebasePaths.DeviceTamperEvents(_deviceId) + "/" + eventId;
         await _firebase.PutAsync(path, payload.ToJsonString(JsonOpts), _ct);
-        BroadcastDataChanged(_deviceId);
     }
 
     // ------------------------------------------------------------ rtdb retention

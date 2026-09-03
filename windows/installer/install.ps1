@@ -111,46 +111,6 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
 
 Get-Service -Name $ServiceName | Format-Table Name, DisplayName, Status, StartType
 
-# --- Dashboard loopback reservation + shortcuts --------------------------------
-# The per-user session agent serves the local dashboard via HttpListener on
-# http://127.0.0.1:37841/. Reserve the URL ACL so a non-elevated bind succeeds,
-# and drop shortcuts that open the dashboard in the default browser.
-$DashboardUrl = "http://127.0.0.1:37841/"
-
-try {
-    # Drop a stale reservation first (ignored if none exists), then grant Everyone.
-    & netsh.exe http delete urlacl url=$DashboardUrl 2>$null | Out-Null
-    & netsh.exe http add urlacl url=$DashboardUrl user=Everyone | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "netsh.exe add urlacl failed ($LASTEXITCODE)"
-    }
-} catch {
-    Write-Warning "URL ACL reservation for '$DashboardUrl' failed - the session agent will still try to bind it: $($_.Exception.Message)"
-}
-
-$ShortcutLines = @(
-    "[InternetShortcut]"
-    "URL=$DashboardUrl"
-)
-# Optional icon; omit if the session exe is not installed.
-if (Test-Path $AgentExe) {
-    $ShortcutLines += "IconFile=`"$AgentExe`""
-}
-$ShortcutContent = $ShortcutLines -join "`r`n"
-
-$DashboardShortcuts = @(
-    (Join-Path $env:USERPROFILE "Desktop\GuardPulse Dashboard.url"),
-    (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\GuardPulse\Dashboard.url")
-)
-foreach ($Shortcut in $DashboardShortcuts) {
-    try {
-        New-Item -ItemType Directory -Force -Path (Split-Path $Shortcut -Parent) | Out-Null
-        Set-Content -Path $Shortcut -Value $ShortcutContent -Encoding UTF8
-    } catch {
-        Write-Warning "Could not create dashboard shortcut '$Shortcut': $($_.Exception.Message)"
-    }
-}
-
 Write-Host ""
 Write-Host "Install complete."
 Write-Host "Reminder: log off and back on (or reboot) once so the per-user agent starts for each user."

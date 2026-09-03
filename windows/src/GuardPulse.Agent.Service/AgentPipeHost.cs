@@ -459,14 +459,6 @@ internal sealed class AgentPipeHost : IDisposable
     public void BroadcastWarningToast(string title, string message) =>
         Broadcast(new { t = "warningToast", title, message });
 
-    /// <summary>
-    /// Something changed for a device (control applied, usage written, unlock request,
-    /// tamper event). The session agent forwards this to the local dashboard server,
-    /// whose SSE event stream wakes any open console watching that device.
-    /// </summary>
-    public void BroadcastDataChanged(string deviceId) =>
-        Broadcast(new { t = "dataChanged", deviceId });
-
     private void Broadcast(object message)
     {
         string json;

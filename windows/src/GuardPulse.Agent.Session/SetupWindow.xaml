@@ -110,7 +110,7 @@
                                     <TextBlock Text="Sign in as Parent" FontSize="15" FontWeight="SemiBold"
                                                FontFamily="{StaticResource Font.Sans.SemiBold}"
                                                Foreground="{StaticResource Brush.OnSurface}"/>
-                                    <TextBlock Text="Use your parent account to access the dashboard."
+                                    <TextBlock Text="Sign in on your phone with your parent account."
                                                Style="{StaticResource Text.LabelMd}" TextWrapping="Wrap"
                                                Margin="0,4,0,0"/>
                                 </StackPanel>
