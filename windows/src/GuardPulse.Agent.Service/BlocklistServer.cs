@@ -129,11 +129,14 @@ public sealed class BlocklistServer : IDisposable
                 var parts = request.Split(' ');
                 if (parts.Length < 2 || !parts[0].Equals("GET", StringComparison.OrdinalIgnoreCase))
                 {
+                    AppendRequestLog(request + " -> 405");
                     await WriteResponseAsync(stream, 405, "text/plain", "method not allowed", ct).ConfigureAwait(false);
                     return;
                 }
 
                 var path = parts[1].Split('?')[0];
+                // Raw request trace: force-install failures are otherwise invisible.
+                AppendRequestLog(request);
                 switch (path.ToLowerInvariant())
                 {
                     case "/rules":
@@ -229,6 +232,21 @@ public sealed class BlocklistServer : IDisposable
         await stream.WriteAsync(head, ct).ConfigureAwait(false);
         await stream.WriteAsync(body, ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Users-readable request trace (force-install failures are silent otherwise).</summary>
+    private void AppendRequestLog(string line)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(StatePaths.Root, "extension-server.log"),
+                $"{DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss} {line}\r\n");
+        }
+        catch
+        {
+            // diagnostics only
+        }
     }
 
     public void Dispose()

@@ -98,6 +98,10 @@ if (-not (Test-Path $SrcCrx)) {
 Copy-Item $SrcCrx $CrxPath -Force
 Remove-Item $SrcCrx -Force -ErrorAction SilentlyContinue
 
+# Extension version comes from the manifest (must match the CRX exactly).
+$Manifest = Get-Content (Join-Path $ExtSrc "manifest.json") -Raw | ConvertFrom-Json
+$ExtVersion = $Manifest.version
+
 # Derive the extension id from the CRX3 header (field 2 = crx_id, 16 bytes).
 $CrxBytes = [IO.File]::ReadAllBytes($CrxPath)
 $HeaderLen = [BitConverter]::ToUInt32($CrxBytes, 8)
@@ -119,7 +123,7 @@ $UpdatesXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
   <app appid="$Id">
-    <updatecheck codebase="http://127.0.0.1:37846/extension.crx" version="1.1.0" />
+    <updatecheck codebase="http://127.0.0.1:37846/extension.crx" version="$ExtVersion" />
   </app>
 </gupdate>
 "@
@@ -174,7 +178,7 @@ if (-not (Test-Path $Issc)) { throw "ISCC.exe not found at $Issc" }
 & $Issc /O"$OutputDir" "$IssFile"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.20.exe"
+$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.22.exe"
 if (Test-Path $ExePath) {
     Write-Host ""
     Write-Host "=== BUILD COMPLETE ===" -ForegroundColor Green

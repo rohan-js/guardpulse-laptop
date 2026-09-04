@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Service;
+﻿namespace GuardPulse.Agent.Service;
 
 using System;
 using System.Collections.Generic;
@@ -134,6 +134,18 @@ public static class BrowserPolicyManager
                 if (baseKey == null) continue;
                 using var listKey = baseKey.CreateSubKey("ExtensionInstallForcelist");
                 listKey?.SetValue("1", $"{extensionId};{updateUrl}", RegistryValueKind.String);
+
+                // The CRX download source must be explicitly allowed on some
+                // Chromium versions/channels even under forcelist.
+                var origin = updateUrl.Substring(0, updateUrl.LastIndexOf('/') + 1);
+                using var sourcesKey = baseKey.CreateSubKey("ExtensionInstallSources");
+                sourcesKey?.SetValue("1", origin + "*", RegistryValueKind.String);
+
+                // Modern equivalent policy (Brave/Edge quirks): per-extension settings.
+                using var settingsKey = baseKey.CreateSubKey("ExtensionSettings");
+                using var extKey = settingsKey.CreateSubKey(extensionId);
+                extKey?.SetValue("installation_mode", "force_installed", RegistryValueKind.String);
+                extKey?.SetValue("update_url", updateUrl, RegistryValueKind.String);
             }
             catch { }
         }
