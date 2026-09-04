@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Service;
+﻿namespace GuardPulse.Agent.Service;
 
 using System.IO;
 using System.Net;
@@ -32,8 +32,9 @@ public static class SiteGuardCertificate
                 logger.LogInformation("Site Guard loopback TLS certificate created and trusted");
             }
 
-            var loaded = new X509Certificate2(pfxPath, PfxPassword,
-                X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.EphemeralKeySet);
+            // Default flags (user key store, persisted): EphemeralKeySet breaks
+            // TLS handshakes in a service session (no user profile to write into).
+            var loaded = new X509Certificate2(pfxPath, PfxPassword);
             if (loaded.NotAfter < DateTimeOffset.UtcNow.AddDays(30))
             {
                 logger.LogWarning("Site Guard TLS certificate expires {Date}; regenerate https-cert.pfx", loaded.NotAfter);
