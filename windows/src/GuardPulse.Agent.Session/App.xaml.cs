@@ -1,4 +1,4 @@
-using System.Threading;
+﻿using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -241,34 +241,6 @@ public partial class App : Application
                     var toastTitle = message.TryGetProperty("title", out var tt) ? tt.GetString() ?? "GuardPulse Screen Time" : "GuardPulse Screen Time";
                     var toastMsg = message.TryGetProperty("message", out var tm) ? tm.GetString() ?? "" : "";
                     ToastWindow.ShowToast(toastTitle, toastMsg);
-                    break;
-                case "blockAction":
-                    var actionAppKey = message.TryGetProperty("appKey", out var bk) ? bk.GetString() ?? "" : "";
-                    var kind = message.TryGetProperty("kind", out var kt) ? kt.GetString() : null;
-                    var url = message.TryGetProperty("url", out var ue) ? ue.GetString() : null;
-                    if (string.IsNullOrEmpty(actionAppKey) || actionAppKey == "__agent__") break;
-                    // Foreground guard: only act when the reported browser IS foreground,
-                    // so the keystrokes can never land in another app.
-                    var foregroundKey = _hook?.LastReportedAppKey;
-                    if (!string.Equals(foregroundKey, actionAppKey, StringComparison.OrdinalIgnoreCase)) break;
-                    _ = Task.Run(() =>
-                    {
-                        try
-                        {
-                            if (kind == "navigate" && !string.IsNullOrWhiteSpace(url))
-                            {
-                                InputSender.NavigateForegroundTabTo(url);
-                            }
-                            else if (kind == "close")
-                            {
-                                InputSender.CloseForegroundTab();
-                            }
-                        }
-                        catch (Exception inputEx)
-                        {
-                            Console.Error.WriteLine($"[blockAction] {inputEx.Message}");
-                        }
-                    });
                     break;
             }
         });

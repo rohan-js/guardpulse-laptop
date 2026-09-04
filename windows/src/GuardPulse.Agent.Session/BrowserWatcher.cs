@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -47,8 +47,6 @@ public sealed class BrowserWatcher : IDisposable
         "Google Chrome", "Chrome", "Microsoft Edge", "Edge", "Brave", "Mozilla Firefox", "Firefox", "Opera", "Vivaldi",
     };
 
-    // 1s scan + no debounce on URL changes: the service's per-tab block action keys off
-    // the active URL, so detection latency after an SPA jump stays ~1-2s (feels instant).
     private const int ScanIntervalMs = 1_000;
     private const int DebounceMs = 1_500;
     private const int HeartbeatMs = 60_000;
@@ -447,9 +445,9 @@ public sealed class BrowserWatcher : IDisposable
                     return;
                 }
             }
-            else if (!urlChanged && _lastSent != null && now - _lastSentAtMs < DebounceMs)
+            else if (_lastSent != null && now - _lastSentAtMs < DebounceMs)
             {
-                return; // coalesce bursts of tab switches — but URL changes go out instantly
+                return; // coalesce bursts of tab switches
             }
 
             _lastSent = snapshot;
