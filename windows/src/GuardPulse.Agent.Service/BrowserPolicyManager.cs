@@ -36,6 +36,10 @@ public static class BrowserPolicyManager
                 using var baseKey = Registry.LocalMachine.CreateSubKey(basePath);
                 if (baseKey == null) continue;
 
+                // Force the system resolver: with Secure DNS (DoH) enabled the browser
+                // resolves names over HTTPS and the hosts-file block is bypassed.
+                baseKey.SetValue("DnsOverHttpsMode", "off", RegistryValueKind.String);
+
                 if (patterns.Count == 0)
                 {
                     baseKey.DeleteSubKeyTree("URLBlocklist", throwOnMissingSubKey: false);
@@ -60,12 +64,13 @@ public static class BrowserPolicyManager
             catch { }
         }
 
-        // 2. Apply to Mozilla Firefox
+        // 2. Apply to Mozilla Firefox (WebsiteFilter + DoH off)
         try
         {
             using var ffBase = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Mozilla\Firefox");
             if (ffBase != null)
             {
+                ffBase.SetValue("DNSOverHTTPS", "false", RegistryValueKind.String);
                 if (patterns.Count == 0)
                 {
                     ffBase.DeleteSubKeyTree("WebsiteFilter", throwOnMissingSubKey: false);
@@ -83,14 +88,17 @@ public static class BrowserPolicyManager
     /// <summary>
     /// Chromium URLBlocklist has no implicit wildcards: "youtube.com/shorts" matches only that exact path,
     /// but the user intends the whole subtree, so we emit both the exact entry and "path/*".
-    /// Bare domains (no path) are returned as-is and are not wildcarded.
+    /// Bare domains get "[*.]domain" too so subdomains (m./music.) are covered at navigation start.
     /// </summary>
     public static IReadOnlyList<string> ToBrowserPatterns(string raw)
     {
         var s = ToBrowserPattern(raw);
         if (string.IsNullOrWhiteSpace(s)) return Array.Empty<string>();
         // Only path entries need the extra wildcard: youtube.com/shorts -> {youtube.com/shorts, youtube.com/shorts/*}
-        if (!s.Contains('/')) return new[] { s };
+        if (!s.Contains('/'))
+        {
+            return new[] { s, "[*.]" + s, "." + s };
+        }
         return s.EndsWith("/*", StringComparison.Ordinal) ? new[] { s } : new[] { s, s + "/*" };
     }
 

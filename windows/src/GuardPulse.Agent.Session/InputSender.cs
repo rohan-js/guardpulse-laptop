@@ -105,8 +105,24 @@ internal static class InputSender
     [StructLayout(LayoutKind.Explicit)]
     private struct InputUnion
     {
+        // The native union is MOUSEINPUT-sized: the struct must reserve its full size
+        // or SendInput rejects every call with a cbSize mismatch (silent no-op).
+        [FieldOffset(0)]
+        public MOUSEINPUT mi;
+
         [FieldOffset(0)]
         public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public nint dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]

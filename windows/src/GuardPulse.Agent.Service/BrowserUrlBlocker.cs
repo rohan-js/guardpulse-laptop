@@ -113,28 +113,49 @@ public sealed class BrowserUrlBlocker
             return (false, null);
         }
 
-        if (_blockedHosts.Contains(host))
+        // Subdomains inherit the rule: music.youtube.com, m.youtube.com and
+        // www.youtube.com are all covered by a youtube.com block / path rule.
+        var current = host;
+        while (current is not null)
         {
-            return (true, host);
+            if (_blockedHosts.Contains(current))
+            {
+                return (true, current);
+            }
+
+            current = NextSuffix(current);
         }
 
-        // A path rule for "www.host" also covers the apex host and vice versa.
-        foreach (var candidate in (string[])[host, StripWww(host)])
+        current = host;
+        while (current is not null)
         {
-            if (candidate is null) continue;
-            if (_pathRules.TryGetValue(candidate, out var paths) && path is not null)
+            if (path is not null && _pathRules.TryGetValue(current, out var paths))
             {
                 foreach (var rule in paths)
                 {
                     if (PathMatches(path, rule))
                     {
-                        return (true, candidate + "/" + rule.TrimStart('/'));
+                        return (true, current + "/" + rule.TrimStart('/'));
                     }
                 }
             }
+
+            current = NextSuffix(current);
         }
 
         return (false, null);
+    }
+
+    /// <summary>The parent domain ("m.youtube.com" -> "youtube.com"), or null at the TLD.</summary>
+    private static string? NextSuffix(string host)
+    {
+        var dot = host.IndexOf('.');
+        if (dot < 0 || dot == host.Length - 1)
+        {
+            return null;
+        }
+
+        return host[(dot + 1)..];
     }
 
     /// <summary>Exact segment-boundary prefix match: "shorts" matches "/shorts" and

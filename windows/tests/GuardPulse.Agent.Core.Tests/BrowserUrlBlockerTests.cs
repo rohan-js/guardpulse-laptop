@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Service.Tests;
+﻿namespace GuardPulse.Agent.Service.Tests;
 
 using GuardPulse.Agent.Service;
 using Xunit;
@@ -16,7 +16,7 @@ public class BrowserUrlBlockerTests
     [InlineData("https://www.youtube.com/watch?v=1", false)]
     [InlineData("https://www.youtube.com/", false)]
     [InlineData("https://www.youtube.com/shortsomething", false)] // segment boundary
-    [InlineData("https://m.youtube.com/shorts/abc", false)] // different host, not implied
+    [InlineData("https://m.youtube.com/shorts/abc", true)] // subdomain inherits the path rule
     public void PathRule_MatchesHostAndPathOnly(string url, bool expected)
     {
         var blocker = BrowserUrlBlocker.Build(CustomWithPath, Array.Empty<string>());
@@ -42,6 +42,16 @@ public class BrowserUrlBlockerTests
     public void CategoryDomains_BlockWholeSite(string url, bool expected)
     {
         var blocker = BrowserUrlBlocker.Build(Array.Empty<string>(), CategoryDomains);
+        Assert.Equal(expected, blocker.IsBlocked(url).Blocked);
+    }
+
+    [Theory]
+    [InlineData("https://music.youtube.com/", true)]
+    [InlineData("https://m.youtube.com/watch?v=1", true)]
+    [InlineData("https://notyoutube.com", false)]
+    public void DomainRule_CoversSubdomains(string url, bool expected)
+    {
+        var blocker = BrowserUrlBlocker.Build(new[] { "youtube.com" }, Array.Empty<string>());
         Assert.Equal(expected, blocker.IsBlocked(url).Blocked);
     }
 
