@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GuardPulse Site Guard — force-installed companion of the GuardPulse laptop agent.
  *
  * Pulls the current block rules from the agent's loopback endpoint and enforces them
@@ -9,7 +9,7 @@
  * No keystroke injection, no page scripts — only tab-level navigation calls.
  */
 
-const RULES_URL = "http://127.0.0.1:37846/rules";
+const RULES_URL = "https://127.0.0.1:37846/rules";
 const FETCH_ALARM = "gp-fetch";
 const REFRESH_ALARM_MS = 15;
 

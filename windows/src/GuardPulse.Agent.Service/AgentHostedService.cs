@@ -169,6 +169,12 @@ public sealed partial class AgentHostedService(
 
 
             _pipeHost.Start(_ct);
+            var tlsCert = SiteGuardCertificate.Ensure(_stateDir, _logger);
+            if (tlsCert is not null)
+            {
+                _blocklistServer.SetCertificate(tlsCert);
+            }
+
             _blocklistServer.Start();
             ConfigureSiteGuardExtension();
             _watchdog.Start(_ct);
@@ -1341,7 +1347,7 @@ var minutes = ms / 60_000L;
             var updatesXml = File.ReadAllText(updatesPath);
             _blocklistServer.SetExtension(crxBytes, updatesXml, extensionId);
             BrowserPolicyManager.ApplyExtensionForceInstall(
-                extensionId, $"http://127.0.0.1:{BlocklistServer.DefaultPort}/updates.xml");
+                extensionId, $"https://127.0.0.1:{BlocklistServer.DefaultPort}/updates.xml");
             _logger.LogInformation("Site Guard extension {Id} force-install policy applied", extensionId);
         }
         catch (Exception ex)

@@ -123,7 +123,7 @@ $UpdatesXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
   <app appid="$Id">
-    <updatecheck codebase="http://127.0.0.1:37846/extension.crx" version="$ExtVersion" />
+    <updatecheck codebase="https://127.0.0.1:37846/extension.crx" version="$ExtVersion" />
   </app>
 </gupdate>
 "@

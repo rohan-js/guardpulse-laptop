@@ -3,7 +3,10 @@
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
@@ -23,6 +26,7 @@ public sealed class BlocklistServer : IDisposable
     private readonly object _gate = new();
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
+    private X509Certificate2? _tlsCertificate;
     private string _rulesTemplate = "{\"domains\":[],\"paths\":[],\"blockPageUrl\":\"\"}";
     private string _rulesJson = "{\"domains\":[],\"paths\":[],\"blockPageUrl\":\"\"}";
     private byte[]? _crxBytes;
@@ -70,6 +74,13 @@ public sealed class BlocklistServer : IDisposable
         }
 
         RefreshRules();
+    }
+
+    /// <summary>Enables TLS: all loopback traffic (extension updates + rules) is served
+    /// over https://127.0.0.1 with the given server certificate (system-trusted root).</summary>
+    public void SetCertificate(X509Certificate2 certificate)
+    {
+        _tlsCertificate = certificate;
     }
 
     public void Start()
@@ -122,7 +133,18 @@ public sealed class BlocklistServer : IDisposable
             {
                 client.ReceiveTimeout = 5_000;
                 client.SendTimeout = 5_000;
-                var stream = client.GetStream();
+                Stream stream = client.GetStream();
+                if (_tlsCertificate is not null)
+                {
+                    var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
+                    await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+                    {
+                        ServerCertificate = _tlsCertificate,
+                        EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+                    }, ct).ConfigureAwait(false);
+                    stream = ssl;
+                }
+
                 var request = await ReadRequestLineAsync(stream, ct).ConfigureAwait(false);
                 if (request is null) return;
 
@@ -196,7 +218,7 @@ public sealed class BlocklistServer : IDisposable
         }
     }
 
-    private static async Task<string?> ReadRequestLineAsync(NetworkStream stream, CancellationToken ct)
+    private static async Task<string?> ReadRequestLineAsync(Stream stream, CancellationToken ct)
     {
         var buffer = new byte[1024];
         var sb = new StringBuilder();
@@ -213,12 +235,12 @@ public sealed class BlocklistServer : IDisposable
         return null;
     }
 
-    private static async Task WriteResponseAsync(NetworkStream stream, int status, string contentType, string body, CancellationToken ct)
+    private static async Task WriteResponseAsync(Stream stream, int status, string contentType, string body, CancellationToken ct)
     {
         await WriteBytesAsync(stream, status, contentType, Encoding.UTF8.GetBytes(body), ct).ConfigureAwait(false);
     }
 
-    private static async Task WriteBytesAsync(NetworkStream stream, int status, string contentType, byte[] body, CancellationToken ct)
+    private static async Task WriteBytesAsync(Stream stream, int status, string contentType, byte[] body, CancellationToken ct)
     {
         var statusText = status == 200 ? "OK" : status == 404 ? "Not Found" : "Method Not Allowed";
         var header =
