@@ -48,14 +48,14 @@ public sealed class BlocklistServer : IDisposable
         RefreshRules();
     }
 
+    private string ExtensionOrigin => string.IsNullOrEmpty(_extensionId) ? "" : "chrome-extension://" + _extensionId;
+
     private void RefreshRules()
     {
         lock (_gate)
         {
-            var origin = string.IsNullOrEmpty(_extensionId)
-                ? ""
-                : "chrome-extension://" + _extensionId;
-            _rulesJson = _rulesTemplate.Replace("__SITE_GUARD_ORIGIN__", origin);
+            _rulesJson = _rulesTemplate.Replace("chrome-extension://__SITE_GUARD_ORIGIN__", ExtensionOrigin)
+                                       .Replace("__SITE_GUARD_ORIGIN__", ExtensionOrigin);
         }
     }
 
