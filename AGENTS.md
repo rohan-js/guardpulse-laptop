@@ -74,15 +74,10 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ## 6. CURRENT STATE (as of 2026-09-04 — 0.2.15)
 
-* Head: **0.2.16** — per-tab site blocking. The blockedSite LOCK is GONE: site blocks never suspend the browser or show the wall. Instead the service's block-action loop (EvaluateBrowserBlockAction: first sighting → navigate now, retry after 3s, max 2 navigates, then Ctrl+W close per 5s; state resets when the URL unblocks or the browser loses foreground) broadcasts `blockAction` over the pipe; the session agent (InputSender, SendInput, guarded on ForegroundHook.LastReportedAppKey) navigates THAT TAB to the local `blocked-site.html` (written at startup, file:// URL) or closes the tab. BrowserWatcher: 1s scan; URL-change snapshots bypass the 1.5s debounce → ~1-2s detection after an SPA jump. DecideFor no longer consults URLs. Prior: 0.2.15 — per-app SESSION limit + INSTANT site blocking.
-  - `sessionLimitMinutes` (1..1440, optional) per app + per mode app, phone-settable in Apps/Modes tabs. Semantics: N minutes of CONTINUOUS open use → lock (reason `sessionLimit`, wall text "Session limit reached"); leaving the app pauses the timer; 2 min away resets the session; UTC-day rollover resets all; PIN/unlock approvals and resetToday clear it. Warnings at 5m/1m left (session-scoped dedup keys re-arm per session).
-  - Plumbing: rules apps+mode-apps validate (deployed live), ControlAppRule (C#), ControlAppRule+parseApps (Kotlin), ParentPolicy + appPolicyValue + Apps/Modes UI fields, SessionUsageTracker (session-usage.json, AtomicFile), EnforcementEngine.Decide session arm (after dailyLimit, before nothing), WritePolicyCache `sessionBlockedApps` + PolicyCache fallback, HeartbeatAsync-independent.
-  - INSTANT site blocking: `BrowserUrlBlocker` (Service) rebuilt on every ApplyContentFilterHosts; OnBrowserReceivedAsync → EvaluateCurrentForeground; DecideFor consults the live tab URL when the reported browser IS the foreground app (snapshot <90s old) → lock reason `blockedSite` ("Blocked site"); releases when the URL leaves the block, browser loses foreground, or approval arrives (unlock path covers it). Path rules (youtube.com/shorts) match host+path with segment boundaries + query-strip; bare domains + enabled category domains match whole host incl. www twins (closes DoH bypass of hosts). Registry URLBlocklist + hosts stay as the navigation-start second layer.
-  - Tests: dotnet 140 Protocol + 135 Core; rules 37/37 (fixed pre-existing customBlockedDomains test missing the control envelope); Kotlin shared+parent green.
-
-* Head: 0.2.13 (`43facc7` + `2eee9d0`) then **0.2.14 hotfix**. 0.2.13 regression: the heartbeat started writing the real `IsStreamConnected` flag, but RTDB over REST has NO `.info/connected` events (attach value is `null`; rules deny the path) — the flag was permanently false, so the phone showed "Laptop connection: Offline" while everything worked. 0.2.14 derives liveness from real SSE traffic (keep-alives every ~30s; 75s alive window) and removes the dead `.info/connected` subscription.
-* Also fixed in 0.2.14 (same root): the `users/{uid}/devices/{id}` presence mirror was stale since pairing and the tray icon stayed visible after pairing — both caused by an empty in-memory `_ownerUid` (one-shot best-effort startup recovery). Now self-heals: throttled retry (5 min) from the heartbeat + agent hello, re-broadcasting paired state on success; heartbeat PATCHes are independently error-isolated.
-* **Install this:** `windows/installer/Output/DeviceServiceSetup-0.2.14.exe` (admin), then **re-pair from the phone** (pairing is currently dead — old identity orphaned).
+* Head: **0.2.25** — sticky session lock + parent messages.
+  - SESSION LIMIT IS STICKY: SessionUsageTracker carries a persisted per-app `SessionLocked` flag; the enforcement arm marks it the moment the limit fires and consults it first. Once locked, the app stays locked through away-gaps/app switches/Escape/day rollover — cleared ONLY by parent approval, correct PIN, or Reset-Today (each starts a fresh session). The old 2-min-away auto-rearm is gone.
+  - PARENT MESSAGES: phone Devices tab per-device input -> RTDB devices/{id}/messages (owner-create/delete, 1-500 chars, rules DEPLOYED) -> laptop SSE stream + 5s poll -> white toast "Message from Parent" 12s (ToastWindow duration param) -> node deleted after display; >10min backlog skipped; 24h retention.
+* Install: DeviceServiceSetup-0.2.25.exe + LAPTOP-PARENT-0.2.25-release.apk (phone).
 * Paired device: `129b2e39670b44ebadb305a7bd91b6b9` (this machine, DESKTOP-4ILVI11). Legacy ids `52053ba0…`/`4f2dde5e…` are orphans.
 * Windows tests green: 133 Protocol + 93 Core (226 total).
 * Firebase rules deployed live to `guardpulse-laptop-control` (unchanged by 0.2.14 — no new keys).
@@ -130,7 +125,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 275 passing (140 Protocol + 135 Core)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 261+ passing (140 Protocol + 121+ Core)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)
