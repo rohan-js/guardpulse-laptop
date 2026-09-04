@@ -122,6 +122,7 @@ public sealed partial class AgentHostedService(
     // Live browser tab state from the Session's BrowserWatcher + the per-domain time
     // ledger for today (b64url(domain) -> ms; RTDB keys cannot contain '.').
     private readonly object _browserGate = new();
+    private BlocklistServer _blocklistServer = null!;
     private PipeBrowserState? _currentBrowser;
     private readonly Dictionary<string, long> _browserDomains = new(StringComparer.Ordinal);
     private string? _browserDomainDayKey;
@@ -168,6 +169,8 @@ public sealed partial class AgentHostedService(
 
 
             _pipeHost.Start(_ct);
+            _blocklistServer.Start();
+            ConfigureSiteGuardExtension();
             _watchdog.Start(_ct);
             _lastAgentSeenMs = NowMs(); // boot grace: give the watchdog time to spawn the agent
 
@@ -413,6 +416,7 @@ public sealed partial class AgentHostedService(
         _enforcement = new EnforcementEngine(_time);
         _unlocks = new OneVisitUnlocks(_stateDir, _time);
         _pipeHost = new AgentPipeHost(_logger);
+        _blocklistServer = new BlocklistServer(_logger);
         _suspender = new ProcessSuspender(_logger);
 
         var agentExePath = Path.Combine(AppContext.BaseDirectory, "GuardPulse.Agent.Session.exe");
@@ -1061,12 +1065,23 @@ var minutes = ms / 60_000L;
             }
 
             BrowserPolicyManager.ApplyUrlBlocklist(customUrls);
+
+            // Real-time layer: publish rules to the Site Guard extension (instant per-tab
+            // blocking incl. SPA jumps, auto-restore on unblock).
+            var rulesJson = SiteBlockRules.BuildJson(customUrls, categories.Values.SelectMany(d => d), SiteGuardOrigin);
+            TryWriteText(Path.Combine(_stateDir, "block-rules.json"), rulesJson);
+            _blocklistServer.UpdateRules(rulesJson);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Content filter hosts/browser update failed");
         }
     }
+
+    /// <summary>Extension origin the block page is served from (packed CRX id filled
+    /// in by ConfigureSiteGuardExtension; the placeholder variant still produces valid
+    /// rules the extension rewrites via its own runtime.getURL).</summary>
+    private const string SiteGuardOrigin = "chrome-extension://__SITE_GUARD_ORIGIN__";
 
     private static bool HasUrlPath(string raw)
     {
@@ -1297,6 +1312,44 @@ var minutes = ms / 60_000L;
     }
 
     /// <summary>
+    /// Wires the Site Guard extension: reads the packed CRX + update manifest shipped in
+    /// {app}\extension, derives the extension id, writes the per-browser force-install
+    /// policy, and registers both with the loopback BlocklistServer. Best-effort — if
+    /// the CRX is missing the registry/hosts layers still enforce (0.2.19 behavior).
+    /// </summary>
+    private void ConfigureSiteGuardExtension()
+    {
+        try
+        {
+            var extensionDir = Path.Combine(AppContext.BaseDirectory, "extension");
+            var crxPath = Path.Combine(extensionDir, "guardpulse-block.crx");
+            var updatesPath = Path.Combine(extensionDir, "updates.xml");
+            if (!File.Exists(crxPath) || !File.Exists(updatesPath))
+            {
+                _logger.LogWarning("Site Guard extension package missing at {Dir}", extensionDir);
+                return;
+            }
+
+            var crxBytes = File.ReadAllBytes(crxPath);
+            var extensionId = SiteBlockCrx.FromCrx(crxBytes);
+            if (string.IsNullOrEmpty(extensionId))
+            {
+                _logger.LogWarning("Site Guard CRX id could not be parsed");
+                return;
+            }
+
+            var updatesXml = File.ReadAllText(updatesPath);
+            _blocklistServer.SetExtension(crxBytes, updatesXml, extensionId);
+            BrowserPolicyManager.ApplyExtensionForceInstall(
+                extensionId, $"http://127.0.0.1:{BlocklistServer.DefaultPort}/updates.xml");
+            _logger.LogInformation("Site Guard extension {Id} force-install policy applied", extensionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Site Guard extension setup failed");
+        }
+    }
+
     private void ApplyDecision(string appKey, bool locked, string reason)
     {
         var wasLocked = false;

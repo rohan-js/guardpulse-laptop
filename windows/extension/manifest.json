@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "GuardPulse Site Guard",
+  "version": "1.0.0",
+  "description": "Enforces the site block list configured by the parent.",
+  "permissions": ["declarativeNetRequest", "tabs", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1:37846/*"],
+  "background": { "service_worker": "background.js" }
+}

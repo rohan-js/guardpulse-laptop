@@ -66,6 +66,66 @@ if (Test-Path $BlSrc) {
 else {
     throw "content-blocklists not found at $BlSrc - the installer would ship without content filtering"
 }
+
+# Copy + pack the Site Guard extension (force-installed into Chrome/Edge/Brave).
+$ExtSrc = Join-Path $WinDir "extension"
+$ExtDst = Join-Path $PublishDir "extension"
+if (-not (Test-Path (Join-Path $ExtSrc "manifest.json"))) {
+    throw "extension manifest not found at $ExtSrc - the installer would ship without site blocking"
+}
+New-Item -ItemType Directory -Force -Path $ExtDst | Out-Null
+Copy-Item -Path "$ExtSrc\*" -Destination $ExtDst -Force -Exclude "*.crx", "*.pem"
+
+# Pack a CRX3 with a COMMITTED signing key (stable extension id across builds).
+# The key must live OUTSIDE the extension dir (Chrome refuses a key inside it).
+$PemPath = Join-Path $WinDir "extension-signing\guardpulse-block.pem"
+$CrxPath = Join-Path $ExtDst "guardpulse-block.crx"
+$Browser = @("C:\Program Files\Google\Chrome\Application\chrome.exe",
+             "C:\Program Files\BraveSoftware\Brave-Browser\Applicationrave.exe",
+             "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Browser) { $Browser = (Get-Command brave -ErrorAction SilentlyContinue).Source }
+if (-not $Browser) { throw "no Chromium browser found to pack the Site Guard extension" }
+if (-not (Test-Path $PemPath)) { throw "signing key missing at $PemPath - the extension id would change" }
+# Chrome writes "<src>.crx" NEXT TO THE SOURCE DIR, so pack in place then move.
+Write-Host "  Packing Site Guard extension with $Browser..." -ForegroundColor Yellow
+$SrcCrx = "$ExtSrc.crx"
+Remove-Item $SrcCrx, $CrxPath -Force -ErrorAction SilentlyContinue
+& $Browser --pack-extension="$ExtSrc" --pack-extension-key="$PemPath" 2>$null | Out-Null
+Start-Sleep -Seconds 3
+if (-not (Test-Path $SrcCrx)) {
+    throw "CRX was not produced at $SrcCrx - extension force-install will not work"
+}
+Copy-Item $SrcCrx $CrxPath -Force
+Remove-Item $SrcCrx -Force -ErrorAction SilentlyContinue
+
+# Derive the extension id from the CRX3 header (field 2 = crx_id, 16 bytes).
+$CrxBytes = [IO.File]::ReadAllBytes($CrxPath)
+$HeaderLen = [BitConverter]::ToUInt32($CrxBytes, 8)
+$Id = $null
+for ($i = 12; $i -lt (12 + $HeaderLen - 17); $i++) {
+    if ($CrxBytes[$i] -eq 0x12 -and $CrxBytes[$i + 1] -eq 0x10) {
+        $Id = ""
+        for ($j = $i + 2; $j -lt ($i + 18); $j++) {
+            $Id += [char](97 + ($CrxBytes[$j] -shr 4))
+            $Id += [char](97 + ($CrxBytes[$j] -band 0xF))
+        }
+        break
+    }
+}
+if (-not $Id) { throw "could not derive Site Guard extension id from CRX" }
+
+# updates.xml: Chromium's self-hosted update manifest (served by BlocklistServer).
+$UpdatesXml = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+  <app appid="$Id">
+    <updatecheck codebase="http://127.0.0.1:37846/extension.crx" version="1.0.0" />
+  </app>
+</gupdate>
+"@
+Set-Content -Path (Join-Path $ExtDst "updates.xml") -Value $UpdatesXml -Encoding UTF8
+Write-Host "  Site Guard extension packed (id $Id)" -ForegroundColor Green
+
 Write-Host "  OK ($((Get-ChildItem $PublishDir -File).Count) files)" -ForegroundColor Green
 
 # --- 3. Generate logo ICO if missing ---
@@ -114,7 +174,7 @@ if (-not (Test-Path $Issc)) { throw "ISCC.exe not found at $Issc" }
 & $Issc /O"$OutputDir" "$IssFile"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.19.exe"
+$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.20.exe"
 if (Test-Path $ExePath) {
     Write-Host ""
     Write-Host "=== BUILD COMPLETE ===" -ForegroundColor Green

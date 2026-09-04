@@ -115,4 +115,27 @@ public static class BrowserPolicyManager
 
         return s;
     }
+
+    /// <summary>
+    /// Force-installs the Site Guard extension into Chrome/Edge/Brave via enterprise
+    /// policy. The extension provides real-time per-tab blocking (SPA navigations and
+    /// already-open tabs) that registry URLBlocklist alone cannot cover. updateUrl is
+    /// served by the agent's loopback BlocklistServer.
+    /// </summary>
+    public static void ApplyExtensionForceInstall(string extensionId, string updateUrl)
+    {
+        if (string.IsNullOrWhiteSpace(extensionId) || string.IsNullOrWhiteSpace(updateUrl)) return;
+
+        foreach (var basePath in ChromiumPolicyPaths)
+        {
+            try
+            {
+                using var baseKey = Registry.LocalMachine.CreateSubKey(basePath);
+                if (baseKey == null) continue;
+                using var listKey = baseKey.CreateSubKey("ExtensionInstallForcelist");
+                listKey?.SetValue("1", $"{extensionId};{updateUrl}", RegistryValueKind.String);
+            }
+            catch { }
+        }
+    }
 }
