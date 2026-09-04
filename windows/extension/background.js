@@ -4,19 +4,19 @@
  * Pulls the current block rules from the agent's loopback endpoint and enforces them
  * in real time: blocked navigations are redirected to the local blocked page, SPA
  * history.pushState jumps (which never trigger network rules) are caught by the tab
- * watcher, and tabs sitting on the block page are sent BACK when the parent removes
- * the site. No keystroke injection, no page scripts — only tab-level navigation calls.
+ * watcher, and when the parent REMOVES a site every affected tab is restored
+ * automatically (block-page tabs navigate back; dead/error tabs reload in place).
+ * No keystroke injection, no page scripts — only tab-level navigation calls.
  */
 
 const RULES_URL = "http://127.0.0.1:37846/rules";
 const FETCH_ALARM = "gp-fetch";
 const REFRESH_ALARM_MS = 15;
-const TAB_SETTLE_MS = 400;
 
 let rules = { domains: [], paths: [], blockPageUrl: "" };
 let hostSet = new Set();
 let pathRules = []; // [{host, prefix}]
-let lastApplied = ""; // JSON hash of applied DNR rule ids
+let lastSignature = "";
 let dnrCounter = 1;
 
 chrome.alarms.create(FETCH_ALARM, { periodInMinutes: REFRESH_ALARM_MS / 60 });
@@ -24,7 +24,13 @@ fetchRules();
 chrome.alarms.onAlarm.addListener(a => { if (a.name === FETCH_ALARM) fetchRules(); });
 chrome.runtime.onStartup.addListener(fetchRules);
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status === "committed" || info.url !== undefined) enforceTab(tabId, tab);
+  // Also treat any navigation as a rules-refresh trigger: phone-initiated changes
+  // land within a browser event instead of waiting for the alarm.
+  if (info.status === "committed" || info.url !== undefined) {
+    if (info.url && info.url.startsWith("chrome-extension://")) enforceTab(tabId, tab);
+    else fetchRules();
+    enforceTab(tabId, tab);
+  }
 });
 
 async function fetchRules() {
@@ -32,17 +38,38 @@ async function fetchRules() {
     const res = await fetch(RULES_URL, { cache: "no-store" });
     if (!res.ok) return;
     const next = await res.json();
+    const previous = { domains: rules.domains.slice(), paths: rules.paths.slice() };
     rules = {
       domains: Array.isArray(next.domains) ? next.domains : [],
       paths: Array.isArray(next.paths) ? next.paths : [],
       blockPageUrl: typeof next.blockPageUrl === "string" ? next.blockPageUrl : "",
     };
     rebuildIndexes();
-    await applyNetworkRules();
-    sweepAllTabs(); // a site may have been blocked or unblocked while we waited
+
+    const signature = JSON.stringify({ d: rules.domains, p: rules.paths, b: rules.blockPageUrl });
+    const changed = signature !== lastSignature;
+
+    await applyNetworkRules(signature);
+
+    if (changed) {
+      // A rule was added or removed: sweep every tab. Blocked -> redirect to the
+      // block page; sitting on our block page for an unblocked site -> go back;
+      // dead on a now-unblocked site (native error page / offline SPA) -> reload.
+      const removed = removedRules(previous);
+      await sweepAllTabs(removed);
+    }
   } catch (e) {
     /* agent down: keep last rules */
   }
+}
+
+function removedRules(previous) {
+  const nowDomains = new Set(rules.domains.map(d => d.toLowerCase()));
+  const nowPaths = new Set(rules.paths.map(p => (p.host + p.prefix).toLowerCase()));
+  return {
+    domains: (previous.domains || []).filter(d => !nowDomains.has(String(d).toLowerCase())),
+    paths: (previous.paths || []).filter(p => !nowPaths.has((p.host + p.prefix).toLowerCase())),
+  };
 }
 
 function rebuildIndexes() {
@@ -88,6 +115,43 @@ function isBlockedUrl(rawUrl) {
   return null;
 }
 
+function wasBlockedByRemoved(url, removed) {
+  if (!url || !/^https?:/i.test(url)) return false;
+  let host, path;
+  try {
+    const u = new URL(url);
+    host = u.hostname.toLowerCase();
+    path = u.pathname || "/";
+  } catch {
+    return false;
+  }
+
+  const removedDomains = new Set((removed.domains || []).map(d => String(d).toLowerCase()));
+  const removedPaths = (removed.paths || []).map(p => ({
+    host: String(p.host || "").toLowerCase(),
+    prefix: String(p.prefix || "/"),
+  }));
+
+  let cur = host;
+  while (cur) {
+    if (removedDomains.has(cur)) return true;
+    const dot = cur.indexOf(".");
+    if (dot < 0 || dot === cur.length - 1) break;
+    cur = cur.slice(dot + 1);
+  }
+
+  for (const rule of removedPaths) {
+    let cur2 = host;
+    while (cur2) {
+      if (cur2 === rule.host && pathStartsWith(path, rule.prefix)) return true;
+      const dot = cur2.indexOf(".");
+      if (dot < 0 || dot === cur2.length - 1) break;
+      cur2 = cur2.slice(dot + 1);
+    }
+  }
+  return false;
+}
+
 function pathStartsWith(path, prefix) {
   const p = prefix.endsWith("/") && prefix.length > 1 ? prefix.slice(0, -1) : prefix;
   if (p === "" || p === "/") return true;
@@ -108,15 +172,13 @@ async function enforceTab(tabId, tab) {
 
   // Tab on our block page: if the original site was unblocked, send it back.
   if (lower.startsWith(rules.blockPageUrl.toLowerCase())) {
-    const from = new URLSearchParams(new URL(url).search).get("from");
-    if (from) {
-      blockPageTabs.set(tabId, from);
-      if (!isBlockedUrl(from)) {
-        if (blockPageTabs.get(tabId) !== undefined) {
-          blockPageTabs.delete(tabId);
-          chrome.tabs.update(tabId, { url: from }).catch(() => {});
-        }
-      }
+    let from = null;
+    try {
+      from = new URLSearchParams(new URL(url).search).get("from");
+    } catch (e) { /* ignore */ }
+    if (from && !isBlockedUrl(from)) {
+      blockPageTabs.delete(tabId);
+      chrome.tabs.update(tabId, { url: from }).catch(() => {});
     }
     return;
   }
@@ -128,11 +190,22 @@ async function enforceTab(tabId, tab) {
   chrome.tabs.update(tabId, { url: blockPageFor(url) }).catch(() => {});
 }
 
-async function sweepAllTabs() {
+async function sweepAllTabs(removed) {
   try {
     const tabs = await chrome.tabs.query({});
     for (const tab of tabs) {
-      if (tab.id !== undefined && tab.url) await enforceTab(tab.id, tab);
+      if (tab.id === undefined || !tab.url) continue;
+      const lower = tab.url.toLowerCase();
+      if (lower.startsWith(rules.blockPageUrl.toLowerCase())) {
+        await enforceTab(tab.id, tab);
+        continue;
+      }
+      if (isBlockedUrl(tab.url)) {
+        await enforceTab(tab.id, tab);
+      } else if (removed && wasBlockedByRemoved(tab.url, removed)) {
+        // Unblocked: reload the dead/error page so the site comes back instantly.
+        chrome.tabs.reload(tab.id, { bypassCache: true }).catch(() => {});
+      }
     }
   } catch (e) {
     /* window closed mid-sweep */
@@ -140,8 +213,7 @@ async function sweepAllTabs() {
 }
 
 /** Network-layer rules: redirect any http(s) request to a blocked host/prefix. */
-async function applyNetworkRules() {
-  const signature = JSON.stringify({ d: rules.domains, p: rules.paths, b: rules.blockPageUrl });
+async function applyNetworkRules(signature) {
   if (signature === lastApplied) return;
   lastApplied = signature;
 
@@ -149,23 +221,23 @@ async function applyNetworkRules() {
   const removeIds = existing.map(r => r.id);
 
   const addRules = [];
-  const makeRedirect = () => ({
-    type: "redirect",
-    redirect: { regexSubstitution: encodeRedirectTarget() },
-  });
+  const hostPattern = d => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const blockPagePath = "/blocked.html";
 
-  // One rule per blocked domain: match host + subdomains, keep path in $1, redirect
-  // to block page carrying the original URL (regexSubstitution cannot URL-encode,
-  // so the block page decodes the raw form).
+  // One rule per blocked domain: match host + subdomains, keep the full URL in $0,
+  // redirect to the packed block page (transform keeps it literal — no loop, the
+  // block page is chrome-extension:// and never matches ^https?://).
   let id = 1;
   for (const domain of rules.domains) {
-    const d = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const d = hostPattern(domain);
     addRules.push({
       id: id++,
       priority: 1,
       action: {
         type: "redirect",
-        redirect: { transform: { scheme: "chrome-extension", host: extensionHost(), path: "/blocked.html", query: "from=\\0" } },
+        redirect: {
+          transform: { scheme: "chrome-extension", host: extensionHost(), path: blockPagePath, query: "from=\\0" },
+        },
       },
       condition: {
         regexFilter: `^https?://([a-z0-9-]+\\.)*${d}(/.*)?$`,
@@ -175,7 +247,7 @@ async function applyNetworkRules() {
   }
 
   for (const p of rules.paths || []) {
-    const host = String(p.host || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const host = hostPattern(String(p.host || ""));
     const prefix = String(p.prefix || "/");
     const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     addRules.push({
@@ -183,7 +255,9 @@ async function applyNetworkRules() {
       priority: 1,
       action: {
         type: "redirect",
-        redirect: { transform: { scheme: "chrome-extension", host: extensionHost(), path: "/blocked.html", query: "from=\\0" } },
+        redirect: {
+          transform: { scheme: "chrome-extension", host: extensionHost(), path: blockPagePath, query: "from=\\0" },
+        },
       },
       condition: {
         regexFilter: `^https?://([a-z0-9-]+\\.)*${host}${esc}(/.*)?$`,
