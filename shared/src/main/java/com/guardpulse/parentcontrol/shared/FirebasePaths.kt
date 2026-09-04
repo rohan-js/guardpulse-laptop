@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.shared
+﻿package com.guardpulse.parentcontrol.shared
 
 object FirebasePaths {
     fun userDevices(parentUid: String) = "users/$parentUid/devices"
@@ -52,6 +52,7 @@ object FirebasePaths {
     fun deviceUnlockRequests(deviceId: String) = "devices/$deviceId/unlockRequests"
     fun deviceUnlockRequest(deviceId: String, requestId: String) =
         "devices/$deviceId/unlockRequests/$requestId"
+    fun deviceMessages(deviceId: String) = "devices/$deviceId/messages"
     fun deviceActivity(deviceId: String) = "devices/$deviceId/activity"
     fun deviceActivityCurrent(deviceId: String) = "devices/$deviceId/activity/current"
     fun deviceActivityHistory(deviceId: String) = "devices/$deviceId/activity/history"

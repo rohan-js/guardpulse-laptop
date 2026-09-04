@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Session;
+﻿namespace GuardPulse.Agent.Session;
 
 using System;
 using System.Windows;
@@ -18,7 +18,7 @@ public partial class ToastWindow : Window
         _hideTimer.Tick += (_, _) => Dismiss();
     }
 
-    public static void ShowToast(string title, string message)
+    public static void ShowToast(string title, string message, int displaySeconds = 6)
     {
         Application.Current?.Dispatcher.Invoke(() =>
         {
@@ -27,15 +27,16 @@ public partial class ToastWindow : Window
                 _instance = new ToastWindow();
             }
 
-            _instance.Display(title, message);
+            _instance.Display(title, message, displaySeconds);
         });
     }
 
-    private void Display(string title, string message)
+    private void Display(string title, string message, int displaySeconds)
     {
         _hideTimer.Stop();
         ToastTitle.Text = title;
         ToastMessage.Text = message;
+        _hideTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(displaySeconds, 3, 60));
 
         // Position at bottom-right of primary work area
         Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));

@@ -1,4 +1,4 @@
-// Named pipe host for service <-> session agent communication.
+﻿// Named pipe host for service <-> session agent communication.
 // Pipe name: guardpulse-laptop-agent (per CONTRACTS.md). Supports multiple concurrent
 // agent connections (one per logon session); JSON lines in both directions; broadcasts
 // go to every connected agent; agent->service messages raise events. Tracks the last
@@ -458,6 +458,9 @@ internal sealed class AgentPipeHost : IDisposable
 
     public void BroadcastWarningToast(string title, string message) =>
         Broadcast(new { t = "warningToast", title, message });
+
+    public void BroadcastShowMessage(string text) =>
+        Broadcast(new { t = "showMessage", text });
 
     /// <summary>Per-tab blocked-site action: the session agent navigates (or closes) the
     /// offending tab. appKey guards that the keystrokes go to the right browser.</summary>

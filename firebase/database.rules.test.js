@@ -1,4 +1,4 @@
-const fs = require("fs");
+﻿const fs = require("fs");
 const {
   assertFails,
   assertSucceeds,
@@ -1088,6 +1088,39 @@ test("sessionLimitMinutes: rejected on state apps (agent-written node)", async (
       fallbackLocked: false,
       usageMinutesToday: 1,
       sessionLimitMinutes: 45,
+    })
+  );
+});
+
+test("parent can push and delete a device message; device cannot create", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/messages/msg1").set({
+      messageId: "msg1",
+      text: "Time for dinner!",
+      createdAt: 123,
+      sentBy: "parentUid",
+    })
+  );
+  // Device (tvUid) cannot create messages.
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/messages/msg2").set({
+      messageId: "msg2",
+      text: "spoof",
+      createdAt: 1,
+      sentBy: "parentUid",
+    })
+  );
+  // Owner delete.
+  await assertSucceeds(dbAs("parentUid").ref("devices/tv1/messages/msg1").remove());
+});
+
+test("message text over 500 chars rejected", async () => {
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/messages/msg3").set({
+      messageId: "msg3",
+      text: "x".repeat(501),
+      createdAt: 1,
+      sentBy: "parentUid",
     })
   );
 });

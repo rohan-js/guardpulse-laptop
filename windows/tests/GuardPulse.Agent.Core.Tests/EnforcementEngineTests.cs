@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core.Tests;
+﻿namespace GuardPulse.Agent.Core.Tests;
 
 using GuardPulse.Agent.Core;
 using GuardPulse.Protocol;
@@ -445,5 +445,35 @@ public class EnforcementEngineTests : IDisposable
         {
             // best effort cleanup
         }
+    }
+
+    [Fact]
+    public void SessionLimit_StickyFlag_LocksEvenAfterAwayGap()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = new SessionUsageTracker(
+            Path.Combine(this.stateDir, $"sticky-{Guid.NewGuid():N}.json"), time);
+        sessions.Tick(GameAppKey, BaseMs);
+        sessions.MarkSessionLocked(GameAppKey);
+
+        // An hour later (way past the 2-minute reset): the lock MUST hold.
+        time.SetUtcNow(BaseMs + 3_600_000);
+        sessions.Tick(GameAppKey, BaseMs + 3_600_000);
+
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 5)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+
+        Assert.True(decision.Locked);
+        Assert.Equal("sessionLimit", decision.Reason);
+
+        // Reset (parent approval / PIN / reset-today) clears it.
+        sessions.Reset(GameAppKey);
+        var after = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+        Assert.False(after.Locked);
     }
 }

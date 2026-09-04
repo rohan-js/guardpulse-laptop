@@ -47,6 +47,7 @@ public sealed partial class AgentHostedService(
     // RTDB retention: tamperEvents 30 days, activity history 7 days (sweep at startup + 24h).
     private static readonly TimeSpan TamperEventRetention = TimeSpan.FromDays(30);
     private static readonly TimeSpan ActivityHistoryRetention = TimeSpan.FromDays(7);
+    private static readonly TimeSpan MessageRetention = TimeSpan.FromDays(1);
     // Field caps matching the RTDB rules; oversized values are silently rejected.
     private const int ActivityLabelMax = 160;
     private const int BrowserNameMax = 100;
@@ -80,6 +81,9 @@ public sealed partial class AgentHostedService(
     private const int ProcessedCommandsKeep = 500;
     private readonly HashSet<string> _handledUnlockRequests = new(StringComparer.Ordinal);
     private const int HandledUnlockRequestsMax = 1000;
+    private IDisposable? _messageStream;
+    private readonly HashSet<string> _handledMessages = new(StringComparer.Ordinal);
+    private const int HandledMessagesMax = 200;
 
     private CancellationToken _ct;
     private TimeProvider _time = TimeProvider.System;
@@ -2831,6 +2835,8 @@ var minutes = ms / 60_000L;
                 FirebasePaths.DeviceTamperEvents(_deviceId), TamperEventRetention, now, ["createdAt"], stalePaths);
             await CollectStaleChildPathsAsync(
                 FirebasePaths.DeviceActivityHistory(_deviceId), ActivityHistoryRetention, now, ["endedAt", "startedAt"], stalePaths);
+            await CollectStaleChildPathsAsync(
+                FirebasePaths.DeviceMessages(_deviceId), MessageRetention, now, ["createdAt"], stalePaths);
 
             for (var offset = 0; offset < stalePaths.Count; offset += RtdbPruneBatchSize)
             {
@@ -2954,6 +2960,7 @@ var minutes = ms / 60_000L;
     private void SubscribeToRealtimeStreams()
     {
         TryStartUnlockStream();
+        TryStartMessageStream();
         TryStartPairStreamIfNeeded();
     }
 
@@ -2971,6 +2978,90 @@ var minutes = ms / 60_000L;
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Unlock stream start failed; boundary ticker will poll");
+        }
+    }
+
+    private void TryStartMessageStream()
+    {
+        if (_messageStream != null) return;
+        try
+        {
+            _messageStream = _firebase.StreamAsync(
+                FirebasePaths.DeviceMessages(_deviceId),
+                raw => _ = HandleMessagesJsonAsync(raw),
+                _ => { },
+                _ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "messages stream subscribe failed (poll fallback covers it)");
+        }
+    }
+
+    /// <summary>Real-time parent messages: each unseen node shows as a toast on the
+    /// laptop and is deleted after display. Old backlog (>10 min) is deleted silently.</summary>
+    private async Task HandleMessagesJsonAsync(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || raw.Trim() == "null") return;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+
+            foreach (var child in doc.RootElement.EnumerateObject())
+            {
+                var messageId = child.Name;
+                if (_handledMessages.Contains(messageId)) continue;
+                if (_handledMessages.Count > HandledMessagesMax)
+                {
+                    _handledMessages.Clear();
+                }
+
+                _handledMessages.Add(messageId);
+                if (child.Value.ValueKind != JsonValueKind.Object) continue;
+
+                var text = GetString(child.Value, "text");
+                var createdAt = GetLong(child.Value, "createdAt");
+                var age = createdAt > 0 ? NowMs() - createdAt : long.MaxValue;
+
+                // Delete after display (owner may also delete from the phone).
+                try
+                {
+                    await _firebase.PutAsync(FirebasePaths.DeviceMessage(_deviceId, messageId), "null", _ct);
+                }
+                catch (Exception delEx)
+                {
+                    _logger.LogWarning(delEx, "message delete failed for {MessageId}", messageId);
+                }
+
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                if (age > 10 * 60_000L)
+                {
+                    _logger.LogInformation("Skipped stale parent message {MessageId} ({AgeMin} min old)",
+                        messageId, age / 60_000);
+                    continue;
+                }
+
+                _pipeHost.BroadcastShowMessage(text);
+                _logger.LogInformation("Displayed parent message {MessageId}", messageId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "messages stream handling failed");
+        }
+    }
+
+    private async Task PollMessagesAsync()
+    {
+        try
+        {
+            var json = await _firebase.GetAsync(FirebasePaths.DeviceMessages(_deviceId), _ct);
+            await HandleMessagesJsonAsync(json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "messages poll failed");
         }
     }
 
@@ -3025,6 +3116,7 @@ var minutes = ms / 60_000L;
             StopPairStreamIfPaired();
         }
         _ = RunSafeAsync("unlock-boundary", PollUnlockRequestsAsync);
+        _ = RunSafeAsync("message-boundary", PollMessagesAsync);
         // Commands have no other poll fallback: if the commands SSE stream is down,
         // owner-sent rescanApps/resetToday/unpair/openSetup would never arrive.
         _ = RunSafeAsync("commands-boundary", PollCommandsAsync);

@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core;
+﻿namespace GuardPulse.Agent.Core;
 
 using System.Collections.Generic;
 using System.Globalization;
@@ -186,8 +186,38 @@ public sealed class SessionUsageTracker
     }
 
     /// <summary>
-    /// Zeroes the app's session (unlock approval / Reset-Today) and persists immediately.
-    /// A no-op for an app with no tracked state.
+    /// Sticky lock state: true once the session limit has fired for the app (this
+    /// session). Survives away-gaps, app switches and day rollover — only
+    /// <see cref="Reset"/>/<see cref="ResetAll"/> (parent approval, correct PIN,
+    /// Reset-Today) clears it, so the wall cannot be disarmed by waiting 2 minutes.
+    /// </summary>
+    public bool IsSessionLocked(string appKey)
+    {
+        lock (this.gate)
+        {
+            return this.apps.TryGetValue(appKey, out var state) && state.SessionLocked;
+        }
+    }
+
+    /// <summary>Marks the app session-locked (called by the enforcement engine the
+    /// moment the limit fires) and persists immediately — a crash must not disarm it.</summary>
+    public void MarkSessionLocked(string appKey)
+    {
+        lock (this.gate)
+        {
+            var state = GetOrCreate(appKey, TodayKey());
+            if (!state.SessionLocked)
+            {
+                state.SessionLocked = true;
+                this.dirty = true;
+                PersistNow();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Zeroes the app's session AND clears its sticky lock (unlock approval /
+    /// Reset-Today), then persists immediately. A no-op for an app with no tracked state.
     /// </summary>
     public void Reset(string appKey)
     {
@@ -199,6 +229,7 @@ public sealed class SessionUsageTracker
             }
 
             ResetEntry(state, TodayKey());
+            state.SessionLocked = false;
             this.dirty = true;
             PersistNow(); // always on Reset
         }
@@ -215,6 +246,7 @@ public sealed class SessionUsageTracker
             foreach (var state in this.apps.Values)
             {
                 ResetEntry(state, today);
+                state.SessionLocked = false;
             }
 
             this.dirty = true;
@@ -272,6 +304,7 @@ public sealed class SessionUsageTracker
                     MsToday = Math.Max(0L, state.MsToday),
                     DayKey = state.DayKey,
                     LastTickMs = state.LastTickMs,
+                    SessionLocked = state.SessionLocked,
                 };
             }
         }
@@ -303,6 +336,7 @@ public sealed class SessionUsageTracker
                 MsToday = state.MsToday,
                 DayKey = state.DayKey,
                 LastTickMs = state.LastTickMs,
+                SessionLocked = state.SessionLocked,
             };
         }
 
@@ -321,5 +355,10 @@ public sealed class SessionUsageTracker
         public string DayKey { get; set; } = string.Empty;
 
         public long LastTickMs { get; set; }
+
+        // Sticky: set the moment the session limit fires; survives away-gaps,
+        // app switches and day rollover. Cleared ONLY by Reset/ResetAll
+        // (parent approval, correct PIN, Reset-Today).
+        public bool SessionLocked { get; set; }
     }
 }

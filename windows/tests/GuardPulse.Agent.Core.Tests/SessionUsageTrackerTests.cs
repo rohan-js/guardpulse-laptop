@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core.Tests;
+﻿namespace GuardPulse.Agent.Core.Tests;
 
 using System.IO;
 using GuardPulse.Agent.Core;
@@ -255,6 +255,57 @@ public class SessionUsageTrackerTests : IDisposable
         catch (IOException)
         {
             // best effort cleanup
+        }
+    }
+
+    [Fact]
+    public void StickyLock_SurvivesAwayGapAndSwitch()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"gp-sticky-{Guid.NewGuid():N}.json");
+        try
+        {
+            var time = new FakeTimeProvider(Base);
+            var tracker = new SessionUsageTracker(path, time);
+            tracker.Tick("app", time.NowMs());
+            time.Advance(TimeSpan.FromSeconds(5));
+            tracker.Tick("app", time.NowMs());
+            tracker.MarkSessionLocked("app");
+            Assert.True(tracker.IsSessionLocked("app"));
+
+            // Away for an hour (well past the 2-minute reset) — the LOCK HOLDS.
+            time.Advance(TimeSpan.FromHours(1));
+            tracker.Tick(null, time.NowMs());
+            time.Advance(TimeSpan.FromSeconds(5));
+            tracker.Tick("app", time.NowMs());
+            Assert.True(tracker.IsSessionLocked("app"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void StickyLock_PersistsAcrossRestart_AndClearsOnReset()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"gp-sticky2-{Guid.NewGuid():N}.json");
+        try
+        {
+            var time = new FakeTimeProvider(Base);
+            var tracker = new SessionUsageTracker(path, time);
+            tracker.Tick("app", time.NowMs());
+            tracker.MarkSessionLocked("app");
+
+            var reloaded = new SessionUsageTracker(path, time);
+            Assert.True(reloaded.IsSessionLocked("app"));
+
+            reloaded.Reset("app");
+            Assert.False(reloaded.IsSessionLocked("app"));
+            Assert.Equal(0, reloaded.EffectiveSessionMs("app", time.NowMs()));
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 }

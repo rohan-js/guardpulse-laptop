@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import android.graphics.Color as AndroidColor
 import android.net.Uri
@@ -122,6 +122,7 @@ internal fun DevicesTab(
     selectedDeviceId: String?,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
+    onSendMessage: (String, String) -> Unit,
     pairRequest: PairRequestState?,
     onPair: (String, String, String) -> Unit,
     onScanQr: () -> Unit
@@ -209,7 +210,8 @@ internal fun DevicesTab(
                     device = device,
                     selected = device.deviceId == selectedDeviceId,
                     onSelectDevice = onSelectDevice,
-                    onRemoveDevice = onRemoveDevice
+                    onRemoveDevice = onRemoveDevice,
+                    onSendMessage = onSendMessage
                 )
             }
         }
@@ -245,7 +247,8 @@ internal fun DeviceCard(
     device: ParentDevice,
     selected: Boolean,
     onSelectDevice: (String) -> Unit,
-    onRemoveDevice: (String) -> Unit
+    onRemoveDevice: (String) -> Unit,
+    onSendMessage: (String, String) -> Unit
 ) {
     GuardCard(
         modifier = Modifier
@@ -288,5 +291,35 @@ internal fun DeviceCard(
             MetaTile("Health", if (device.protectionHealthy) "Healthy" else "Needs setup", device.protectionHealthy, Modifier.weight(1f))
         }
         MetaTile("Last seen", formatTimestamp(device.lastSeen), device.online, Modifier.fillMaxWidth().padding(top = 12.dp))
+
+        var messageText by remember { mutableStateOf("") }
+        var sending by remember { mutableStateOf(false) }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = messageText,
+                onValueChange = { messageText = it.take(500) },
+                label = { Text("Message to laptop") },
+                placeholder = { Text("Shown on the laptop screen") },
+                enabled = !sending,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(10.dp))
+            Button(
+                onClick = {
+                    if (messageText.isNotBlank()) {
+                        sending = true
+                        onSendMessage(device.deviceId, messageText)
+                        messageText = ""
+                        sending = false
+                    }
+                },
+                enabled = !sending && messageText.isNotBlank()
+            ) {
+                Text("Send")
+            }
+        }
     }
 }

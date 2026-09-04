@@ -481,6 +481,23 @@
             }
           }
         },
+        "messages": {
+          ".indexOn": [
+            "createdAt"
+          ],
+          "$messageId": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && ((!data.exists() && newData.child('sentBy').val() == auth.uid) || (data.exists() && !newData.exists()))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['messageId', 'text', 'createdAt', 'sentBy']) && newData.child('messageId').val() == $messageId && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 500 && newData.child('createdAt').isNumber() && newData.child('sentBy').isString())",
+            "messageId": {},
+            "text": {},
+            "createdAt": {},
+            "sentBy": {},
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+
         "unlockRequests": {
           ".indexOn": [
             "createdAt",

@@ -242,6 +242,14 @@ public partial class App : Application
                     var toastMsg = message.TryGetProperty("message", out var tm) ? tm.GetString() ?? "" : "";
                     ToastWindow.ShowToast(toastTitle, toastMsg);
                     break;
+                case "showMessage":
+                    var parentText = message.TryGetProperty("text", out var mt) ? mt.GetString() ?? "" : "";
+                    if (!string.IsNullOrWhiteSpace(parentText))
+                    {
+                        ToastWindow.ShowToast("Message from Parent", parentText, displaySeconds: 12);
+                    }
+
+                    break;
             }
         });
     }

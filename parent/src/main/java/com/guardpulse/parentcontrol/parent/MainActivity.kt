@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
                             onSignOut = syncViewModel::signOut,
                             onSelectDevice = syncViewModel::selectDevice,
                             onRemoveDevice = syncViewModel::removePairedDevice,
+                            onSendMessage = syncViewModel::sendMessage,
                             onPair = syncViewModel::createPairRequest,
                             onUpdatePolicy = syncViewModel::updatePolicy,
                             onSetPin = syncViewModel::setPin,
@@ -199,6 +200,7 @@ private fun ParentDashboard(
     onSignOut: () -> Unit,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
+    onSendMessage: (String, String) -> Unit,
     onPair: (String, String, String) -> Unit,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onSetPin: (String) -> Unit,
@@ -294,6 +296,7 @@ private fun ParentDashboard(
                             true
                         ) { onRemoveDevice(deviceId) }
                     },
+                    onSendMessage,
                     syncState.pairRequest,
                     onPair,
                     onScanQr

@@ -1,4 +1,4 @@
-namespace GuardPulse.Protocol;
+﻿namespace GuardPulse.Protocol;
 
 /// <summary>
 /// Firebase Realtime Database path builders. Ported from
@@ -88,6 +88,11 @@ public static class FirebasePaths
 
     public static string DeviceUnlockRequest(string deviceId, string requestId) =>
         $"devices/{deviceId}/unlockRequests/{requestId}";
+
+    public static string DeviceMessages(string deviceId) => $"devices/{deviceId}/messages";
+
+    public static string DeviceMessage(string deviceId, string messageId) =>
+        $"devices/{deviceId}/messages/{messageId}";
 
     public static string DeviceActivity(string deviceId) => $"devices/{deviceId}/activity";
 

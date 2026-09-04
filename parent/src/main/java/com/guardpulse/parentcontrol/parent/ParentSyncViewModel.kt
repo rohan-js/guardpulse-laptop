@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -273,6 +273,15 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
             type,
             packageName,
             onSuccess = { setMessage("Command sent; waiting for TV") },
+            onError = ::setMessage
+        )
+    }
+
+    fun sendMessage(deviceId: String, text: String) {
+        writer?.sendMessage(
+            deviceId,
+            text,
+            onSuccess = { setMessage("Message sent to laptop") },
             onError = ::setMessage
         )
     }

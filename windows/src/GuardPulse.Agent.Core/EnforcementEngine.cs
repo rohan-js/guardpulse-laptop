@@ -169,11 +169,18 @@ public sealed class EnforcementEngine
             return Locked(appKey, PolicyConstants.BLOCK_REASON_DAILY_LIMIT);
         }
 
-        if (rule.SessionLimitMinutes is int sessionMinutes &&
-            sessions is not null &&
-            sessions.EffectiveSessionMs(appKey, nowMs ?? NowMs()) >= (long)sessionMinutes * MsPerMinute)
+        // Sticky session lock: once the limit has fired, the app stays locked through
+        // away-gaps, app switches and day rollover — only Reset (parent approval,
+        // correct PIN, Reset-Today) clears the flag. Waiting 2 minutes does NOT
+        // re-arm the session.
+        if (rule.SessionLimitMinutes is int sessionMinutes && sessions is not null)
         {
-            return Locked(appKey, PolicyConstants.BLOCK_REASON_SESSION_LIMIT);
+            if (sessions.IsSessionLocked(appKey) ||
+                sessions.EffectiveSessionMs(appKey, nowMs ?? NowMs()) >= (long)sessionMinutes * MsPerMinute)
+            {
+                sessions.MarkSessionLocked(appKey);
+                return Locked(appKey, PolicyConstants.BLOCK_REASON_SESSION_LIMIT);
+            }
         }
 
         return NotLocked(appKey);

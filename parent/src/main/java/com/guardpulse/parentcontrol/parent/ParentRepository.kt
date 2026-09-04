@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DatabaseReference
@@ -354,6 +354,30 @@ class ParentRepository(
         if (packageName != null) value["packageName"] = packageName
         database.child(FirebasePaths.deviceCommands(deviceId)).push().setValue(value)
             .complete(onSuccess, onError, "Command failed")
+    }
+
+    fun sendMessage(
+        deviceId: String,
+        text: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val uid = requireUid(onError) ?: return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || trimmed.length > 500) {
+            onError("Message must be 1-500 characters")
+            return
+        }
+        val messageId = database.child(FirebasePaths.deviceMessages(deviceId)).push().key
+            ?: return onError("Could not create message")
+        val value = mapOf(
+            "messageId" to messageId,
+            "text" to trimmed,
+            "createdAt" to ServerValue.TIMESTAMP,
+            "sentBy" to uid
+        )
+        database.child(FirebasePaths.deviceMessages(deviceId)).child(messageId).setValue(value)
+            .complete(onSuccess, onError, "Message send failed")
     }
 
     fun removePairedDevice(
