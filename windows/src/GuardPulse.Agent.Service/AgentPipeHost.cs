@@ -459,6 +459,11 @@ internal sealed class AgentPipeHost : IDisposable
     public void BroadcastWarningToast(string title, string message) =>
         Broadcast(new { t = "warningToast", title, message });
 
+    /// <summary>Per-tab blocked-site action: the session agent navigates (or closes) the
+    /// offending tab. appKey guards that the keystrokes go to the right browser.</summary>
+    public void BroadcastBlockAction(string appKey, string kind, string? url) =>
+        Broadcast(new { t = "blockAction", appKey, kind, url });
+
     private void Broadcast(object message)
     {
         string json;

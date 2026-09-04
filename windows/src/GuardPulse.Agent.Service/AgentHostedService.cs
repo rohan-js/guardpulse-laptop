@@ -26,7 +26,7 @@ using Microsoft.Extensions.Logging;
 
 namespace GuardPulse.Agent.Service;
 
-public sealed class AgentHostedService(
+public sealed partial class AgentHostedService(
     ILogger<AgentHostedService> logger,
     IHostApplicationLifetime lifetime) : BackgroundService
 {
@@ -169,6 +169,8 @@ public sealed class AgentHostedService(
             {
                 ApplyContentFilterHosts(_syncEngine.LastValidSnapshot);
             }
+
+            WriteBlockPage();
 
             _pipeHost.Start(_ct);
             _watchdog.Start(_ct);
@@ -913,6 +915,7 @@ var minutes = ms / 60_000L;
 
             WritePolicyCache(snapshot);
             EvaluateCurrentForeground();
+            RunBlockActionIfApplicable(); // a parent block lands while the child sits on that site
 
             _ = Task.Run(async () =>
             {
@@ -1303,31 +1306,85 @@ var minutes = ms / 60_000L;
         // extend/truncate timed unlocks.
         var serverNowMs = _syncEngine.ServerNowMs();
         var decision = _enforcement.Decide(snapshot, appKey, _ledger, _unlocks, _agentAppKey, serverNowMs, _sessions, NowMs());
-        if (decision.Locked)
-        {
-            // Policy lock (manual/daily/session/schedule/budget/allowlist) always wins;
-            // its reason is what the wall shows.
-            return (decision.Locked, decision.Reason);
-        }
-
-        var urlReason = EvaluateBrowserUrlLock(appKey, snapshot, serverNowMs);
-        return urlReason is null ? (false, "none") : (true, urlReason);
+        return (decision.Locked, decision.Reason);
     }
 
     /// <summary>
-    /// Real-time blocked-site check for the CURRENT foreground browser: when the live
-    /// tab URL matches the content policy (custom sites with paths, custom/built-in
-    /// domains incl. the DNS-over-HTTPS bypass), the browser locks with reason
-    /// "blockedSite" until the tab leaves the blocked page, the browser loses
-    /// foreground, or a parent approval window covers it. Registry URLBlocklist and
-    /// hosts remain the navigation-start second layer. Returns the reason string or
-    /// null when no URL lock applies.
+    /// Real-time blocked-site detection for the CURRENT foreground browser: when the
+    /// live tab URL matches the content policy (custom sites with paths, custom/built-in
+    /// domains incl. the DNS-over-HTTPS bypass), the offending TAB is acted on — never
+    /// the browser process. The session agent navigates that tab to the local block
+    /// page (fallback: closes it); the rest of the browser keeps working. Registry
+    /// URLBlocklist and hosts remain the navigation-start second layer.
     /// </summary>
-    private string? EvaluateBrowserUrlLock(string appKey, ControlSnapshotV2 snapshot, long serverNowMs)
+    private void EvaluateBrowserBlockAction(string appKey, ControlSnapshotV2 snapshot, long serverNowMs)
     {
-        if (_urlBlocker == BrowserUrlBlocker.Empty || _unlocks.IsUnlocked(appKey, serverNowMs))
+        var (applicable, activeUrl, matchedRule) = BrowserBlockActionTarget(appKey, serverNowMs);
+        if (!applicable)
         {
-            return null;
+            lock (_blockActionGate)
+            {
+                _blockAction = null; // browser lost foreground / snapshot stale: reset
+            }
+
+            return;
+        }
+
+        if (activeUrl is null || matchedRule is null)
+        {
+            // Current tab is clean (navigated away / block landed): the action landed.
+            lock (_blockActionGate)
+            {
+                _blockAction = null;
+            }
+
+            return;
+        }
+
+        lock (_blockActionGate)
+        {
+            var now = NowMs();
+            if (_blockAction is null
+                || !string.Equals(_blockAction.Url, activeUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                // First sighting of this blocked URL (or a different one): act now.
+                _blockAction = new BlockActionState(activeUrl, Attempts: 0, LastActionMs: 0, NextAllowedMs: now);
+            }
+
+            var state = _blockAction;
+            if (now < state.NextAllowedMs)
+            {
+                return;
+            }
+
+            if (state.Attempts < MaxNavigateAttempts)
+            {
+                _pipeHost.BroadcastBlockAction(appKey, BlockActionKindNavigate, BlockPageUrl());
+                _blockAction = state with { Attempts = state.Attempts + 1, LastActionMs = now, NextAllowedMs = now + NavigateRetryMs };
+                _logger.LogInformation("Blocked site {Url} ({Rule}): navigating tab ({Attempt}/{Max})",
+                    Truncate(activeUrl, 160), matchedRule, state.Attempts + 1, MaxNavigateAttempts);
+            }
+            else
+            {
+                // Navigation did not take (rare): close the tab instead. Still per-tab.
+                _pipeHost.BroadcastBlockAction(appKey, BlockActionKindClose, null);
+                _blockAction = state with { LastActionMs = now, NextAllowedMs = now + CloseRetryMs };
+                _logger.LogInformation("Blocked site {Url}: closing tab (navigate did not land)", Truncate(activeUrl, 160));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decides whether a block action applies to the foreground browser. Returns
+    /// (applicable, activeUrl-when-blocked, matchedRule). applicable=false means the
+    /// signal is unusable (no blocker, not foreground, stale snapshot) and any state
+    /// must reset; applicable=true with null url/rule means the active tab is clean.
+    /// </summary>
+    private (bool Applicable, string? BlockedUrl, string? MatchedRule) BrowserBlockActionTarget(string appKey, long serverNowMs)
+    {
+        if (_urlBlocker == BrowserUrlBlocker.Empty)
+        {
+            return (false, null, null);
         }
 
         PipeBrowserState? browser;
@@ -1344,17 +1401,29 @@ var minutes = ms / 60_000L;
             || !string.Equals(browser.AppKey, appKey, StringComparison.OrdinalIgnoreCase)
             || NowMs() - receivedAtMs > 90_000)
         {
-            return null;
+            return (false, null, null);
         }
 
         var verdict = _urlBlocker.IsBlocked(browser.ActiveUrl);
-        if (!verdict.Blocked)
-        {
-            return null;
-        }
-
-        return PolicyConstants.BLOCK_REASON_BLOCKED_SITE;
+        return (true, verdict.Blocked ? browser.ActiveUrl : null, verdict.Blocked ? verdict.MatchedRule : null);
     }
+
+    /// <summary>Local block page the tab is navigated to (file URL; written at startup).</summary>
+    private string BlockPageUrl()
+    {
+        var path = Path.Combine(_stateDir, "blocked-site.html");
+        return "file:///" + path.Replace('\\', '/');
+    }
+
+    private const int MaxNavigateAttempts = 2;
+    private const long NavigateRetryMs = 3_000;
+    private const long CloseRetryMs = 5_000;
+    private const string BlockActionKindNavigate = "navigate";
+    private const string BlockActionKindClose = "close";
+
+    private sealed record BlockActionState(string Url, int Attempts, long LastActionMs, long NextAllowedMs);
+    private BlockActionState? _blockAction;
+    private readonly object _blockActionGate = new();
 
     private void ApplyDecision(string appKey, bool locked, string reason)
     {
@@ -2551,13 +2620,37 @@ var minutes = ms / 60_000L;
         }
 
         // Blocked-site reaction: a URL change (including SPA pushState jumps, which the
-        // watcher reports via the omnibox) re-evaluates immediately instead of waiting
-        // for the 5s boundary tick. DecideFor includes the URL verdict, so this both
-        // engages the wall on a blocked page and releases it on navigating away.
+        // watcher reports via the omnibox) is acted on immediately — the offending TAB
+        // gets navigated to the block page; the browser itself is never locked.
         if (!string.Equals(previous?.ActiveUrl, snapshot.ActiveUrl, StringComparison.Ordinal)
             || _urlBlocker != BrowserUrlBlocker.Empty)
         {
-            EvaluateCurrentForeground();
+            RunBlockActionIfApplicable();
+        }
+    }
+
+    /// <summary>Runs the per-tab block action for the current foreground app, if any.</summary>
+    private void RunBlockActionIfApplicable()
+    {
+        string? appKey;
+        lock (_gate)
+        {
+            appKey = _currentAppKey;
+        }
+
+        var snapshot = _syncEngine.LastValidSnapshot;
+        if (appKey is null || snapshot is null)
+        {
+            return;
+        }
+
+        try
+        {
+            EvaluateBrowserBlockAction(appKey, snapshot, _syncEngine.ServerNowMs());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "block action evaluation failed");
         }
     }
 
@@ -3010,6 +3103,7 @@ var minutes = ms / 60_000L;
     private Task BoundaryTickAsync()
     {
         EvaluateCurrentForeground();
+        RunBlockActionIfApplicable();
         lock (_gate)
         {
             var foreground = _currentAppKey;
