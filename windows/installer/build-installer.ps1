@@ -118,12 +118,17 @@ for ($i = 12; $i -lt (12 + $HeaderLen - 17); $i++) {
 }
 if (-not $Id) { throw "could not derive Site Guard extension id from CRX" }
 
+# Chromium requires the updatecheck to carry the CRX SHA-256 (hash_sha256):
+# without it the updater rejects the response before downloading.
+$Sha = [System.Security.Cryptography.SHA256]::Create()
+$CrxHash = [Convert]::ToBase64String($Sha.ComputeHash([IO.File]::ReadAllBytes($CrxPath)))  # hash_sha256 expects BASE64
+
 # updates.xml: Chromium's self-hosted update manifest (served by BlocklistServer).
 $UpdatesXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
   <app appid="$Id">
-    <updatecheck codebase="https://127.0.0.1:37846/extension.crx" version="$ExtVersion" />
+    <updatecheck codebase="https://127.0.0.1:37846/extension.crx" version="$ExtVersion" hash_sha256="$CrxHash" status="ok" />
   </app>
 </gupdate>
 "@
@@ -178,7 +183,7 @@ if (-not (Test-Path $Issc)) { throw "ISCC.exe not found at $Issc" }
 & $Issc /O"$OutputDir" "$IssFile"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.22.exe"
+$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.23.exe"
 if (Test-Path $ExePath) {
     Write-Host ""
     Write-Host "=== BUILD COMPLETE ===" -ForegroundColor Green
