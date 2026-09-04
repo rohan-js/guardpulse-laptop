@@ -1319,7 +1319,7 @@ var minutes = ms / 60_000L;
     /// </summary>
     private void EvaluateBrowserBlockAction(string appKey, ControlSnapshotV2 snapshot, long serverNowMs)
     {
-        var (applicable, activeUrl, matchedRule) = BrowserBlockActionTarget(appKey, serverNowMs);
+        var (applicable, activeUrl, rawActiveUrl, matchedRule) = BrowserBlockActionTarget(appKey, serverNowMs);
         if (!applicable)
         {
             lock (_blockActionGate)
@@ -1332,12 +1332,14 @@ var minutes = ms / 60_000L;
 
         if (activeUrl is null || matchedRule is null)
         {
-            // Current tab is clean (navigated away / block landed): the action landed.
+            // Current tab is clean. If it is sitting on OUR block page and the parent
+            // has since unblocked that site, send the child back — no refresh needed.
             lock (_blockActionGate)
             {
                 _blockAction = null;
             }
 
+            TryRestoreUnblockedTab(appKey, rawActiveUrl);
             return;
         }
 
@@ -1359,10 +1361,11 @@ var minutes = ms / 60_000L;
 
             if (state.Attempts < MaxNavigateAttempts)
             {
-                _pipeHost.BroadcastBlockAction(appKey, BlockActionKindNavigate, BlockPageUrl());
+                _pipeHost.BroadcastBlockAction(appKey, BlockActionKindNavigate, BlockPageUrl(activeUrl));
                 _blockAction = state with { Attempts = state.Attempts + 1, LastActionMs = now, NextAllowedMs = now + NavigateRetryMs };
                 _logger.LogInformation("Blocked site {Url} ({Rule}): navigating tab ({Attempt}/{Max})",
                     Truncate(activeUrl, 160), matchedRule, state.Attempts + 1, MaxNavigateAttempts);
+                TryAppendBlockLog($"navigate attempt {state.Attempts + 1} url={Truncate(activeUrl, 120)}");
             }
             else
             {
@@ -1370,21 +1373,102 @@ var minutes = ms / 60_000L;
                 _pipeHost.BroadcastBlockAction(appKey, BlockActionKindClose, null);
                 _blockAction = state with { LastActionMs = now, NextAllowedMs = now + CloseRetryMs };
                 _logger.LogInformation("Blocked site {Url}: closing tab (navigate did not land)", Truncate(activeUrl, 160));
+                TryAppendBlockLog($"close fallback url={Truncate(activeUrl, 120)}");
             }
         }
     }
 
     /// <summary>
-    /// Decides whether a block action applies to the foreground browser. Returns
-    /// (applicable, activeUrl-when-blocked, matchedRule). applicable=false means the
-    /// signal is unusable (no blocker, not foreground, stale snapshot) and any state
-    /// must reset; applicable=true with null url/rule means the active tab is clean.
+    /// When the active tab is on the block page (?from=&lt;original&gt;) and the parent has
+    /// unblocked that original URL, navigates the tab back automatically. Debounced so a
+    /// restore fires at most once per minute per URL.
     /// </summary>
-    private (bool Applicable, string? BlockedUrl, string? MatchedRule) BrowserBlockActionTarget(string appKey, long serverNowMs)
+    private void TryRestoreUnblockedTab(string appKey, string? rawActiveUrl)
+    {
+        if (string.IsNullOrEmpty(rawActiveUrl)
+            || !rawActiveUrl.StartsWith(BlockPageFilePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var from = GetQueryParam(rawActiveUrl, "from");
+        if (string.IsNullOrEmpty(from) || _urlBlocker.IsBlocked(from).Blocked)
+        {
+            return;
+        }
+
+        lock (_restoreGate)
+        {
+            var now = NowMs();
+            if (_restoreAction is not null
+                && string.Equals(_restoreAction.Url, from, StringComparison.OrdinalIgnoreCase)
+                && now < _restoreAction.NextAllowedMs)
+            {
+                return;
+            }
+
+            _pipeHost.BroadcastBlockAction(appKey, BlockActionKindNavigate, from);
+            _restoreAction = new BlockActionState(from, Attempts: 0, LastActionMs: now, NextAllowedMs: now + RestoreDebounceMs);
+            _logger.LogInformation("Site unblocked: sending tab back to {Url}", Truncate(from, 160));
+            TryAppendBlockLog($"restore url={Truncate(from, 120)}");
+        }
+    }
+
+    /// <summary>Value of a query parameter in a URL, or null.</summary>
+    private static string? GetQueryParam(string url, string name)
+    {
+        var q = url.IndexOf('?');
+        if (q < 0) return null;
+        foreach (var pair in url[(q + 1)..].Split('&'))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            if (!pair[..eq].Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                return Uri.UnescapeDataString(pair[(eq + 1)..]);
+            }
+            catch (UriFormatException)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private const string BlockPageFileName = "blocked-site.html";
+
+    private string BlockPageFileUrl => "file:///" + Path.Combine(_stateDir, BlockPageFileName).Replace('\\', '/');
+
+    private string BlockPageFilePrefix => BlockPageFileUrl;
+
+    /// <summary>Append-only Users-readable trace of per-tab block actions (field debugging).</summary>
+    private void TryAppendBlockLog(string line)
+    {
+        try
+        {
+            var path = Path.Combine(_stateDir, "block-actions.log");
+            File.AppendAllText(path, $"{_time.GetUtcNow():yyyy-MM-dd HH:mm:ss} {line}\r\n");
+        }
+        catch
+        {
+            // diagnostics only
+        }
+    }
+
+    /// <summary>
+    /// Decides whether a block action applies to the foreground browser. Returns
+    /// (applicable, blockedUrl-or-null, rawActiveUrl, matchedRule). applicable=false
+    /// means the signal is unusable (no blocker, not foreground, stale snapshot) and
+    /// any state must reset; applicable=true with null blockedUrl means the active
+    /// tab is clean (block page included — restore logic decides).
+    /// </summary>
+    private (bool Applicable, string? BlockedUrl, string? RawActiveUrl, string? MatchedRule) BrowserBlockActionTarget(string appKey, long serverNowMs)
     {
         if (_urlBlocker == BrowserUrlBlocker.Empty)
         {
-            return (false, null, null);
+            return (false, null, null, null);
         }
 
         PipeBrowserState? browser;
@@ -1401,29 +1485,25 @@ var minutes = ms / 60_000L;
             || !string.Equals(browser.AppKey, appKey, StringComparison.OrdinalIgnoreCase)
             || NowMs() - receivedAtMs > 90_000)
         {
-            return (false, null, null);
+            return (false, null, null, null);
         }
 
         var verdict = _urlBlocker.IsBlocked(browser.ActiveUrl);
-        return (true, verdict.Blocked ? browser.ActiveUrl : null, verdict.Blocked ? verdict.MatchedRule : null);
-    }
-
-    /// <summary>Local block page the tab is navigated to (file URL; written at startup).</summary>
-    private string BlockPageUrl()
-    {
-        var path = Path.Combine(_stateDir, "blocked-site.html");
-        return "file:///" + path.Replace('\\', '/');
+        return (true, verdict.Blocked ? browser.ActiveUrl : null, browser.ActiveUrl, verdict.Blocked ? verdict.MatchedRule : null);
     }
 
     private const int MaxNavigateAttempts = 2;
     private const long NavigateRetryMs = 3_000;
     private const long CloseRetryMs = 5_000;
+    private const long RestoreDebounceMs = 60_000;
     private const string BlockActionKindNavigate = "navigate";
     private const string BlockActionKindClose = "close";
 
     private sealed record BlockActionState(string Url, int Attempts, long LastActionMs, long NextAllowedMs);
     private BlockActionState? _blockAction;
     private readonly object _blockActionGate = new();
+    private BlockActionState? _restoreAction;
+    private readonly object _restoreGate = new();
 
     private void ApplyDecision(string appKey, bool locked, string reason)
     {

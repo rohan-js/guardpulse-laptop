@@ -1,4 +1,4 @@
-﻿namespace GuardPulse.Agent.Service;
+namespace GuardPulse.Agent.Service;
 
 using System.IO;
 using System.Text;
@@ -6,8 +6,9 @@ using System.Text;
 public sealed partial class AgentHostedService
 {
     /// <summary>
-    /// Writes the local page a blocked tab is navigated to (file:// URL). Rewritten at
-    /// every service start so updates ship with the installer without migration.
+    /// Writes the page a blocked tab is navigated to (file:// URL, carries the original
+    /// URL in ?from= so the agent can send the child back automatically on unblock).
+    /// Rewritten at every service start so updates ship with the installer.
     /// </summary>
     private void WriteBlockPage()
     {
@@ -23,39 +24,60 @@ public sealed partial class AgentHostedService
         }
     }
 
+    /// <summary>Block-page navigation target for a blocked original URL.</summary>
+    private string BlockPageUrl(string? originalUrl)
+    {
+        var path = Path.Combine(_stateDir, "blocked-site.html");
+        var url = "file:///" + path.Replace('\\', '/');
+        return originalUrl is null ? url : url + "?from=" + Uri.EscapeDataString(originalUrl);
+    }
+
     private const string BlockPageHtml = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Blocked by GuardPulse</title>
+<title>This page is blocked</title>
 <style>
-  :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     display: flex; align-items: center; justify-content: center;
-    background: #12141c; color: #eef1f8;
-    font-family: 'Segoe UI', system-ui, sans-serif; text-align: center; padding: 24px;
+    background: #fff; color: #202124;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; text-align: center; padding: 24px;
   }
-  .card { max-width: 460px; }
-  .logo { width: 84px; height: 84px; margin-bottom: 28px; }
-  h1 { font-size: 26px; font-weight: 600; letter-spacing: .3px; margin-bottom: 10px; }
-  p  { font-size: 15px; color: #9aa3b5; line-height: 1.55; }
-  .rule { width: 56px; height: 3px; border-radius: 2px; background: #3d5afe; margin: 22px auto 0; }
+  .icon { width: 132px; height: 132px; margin: 0 auto 40px; display: block; }
+  h1 { font-size: 22px; font-weight: 400; letter-spacing: .1px; margin-bottom: 14px; }
+  p  { font-size: 15px; color: #5f6368; line-height: 1.55; max-width: 480px; margin: 0 auto; }
+  .code {
+    display: inline-block; margin-top: 46px; padding: 6px 12px;
+    font: 12px/1.4 Consolas, 'Courier New', monospace; color: #5f6368;
+    background: #f1f3f4; border-radius: 3px;
+  }
 </style>
 </head>
 <body>
-<div class="card">
-  <svg class="logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M32 4 L56 13 V32 C56 47 46 57 32 60 C18 57 8 47 8 32 V13 Z" fill="#1c2740" stroke="#3d5afe" stroke-width="3" stroke-linejoin="round"/>
-    <path d="M14 34 H24 L28 24 L34 42 L38 32 H50" stroke="#22d3ee" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<div>
+  <svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="12" r="10" stroke="#9aa0a6" stroke-width="1.4"/>
+    <line x1="5.5" y1="5.5" x2="18.5" y2="18.5" stroke="#9aa0a6" stroke-width="1.4"/>
+    <text x="12" y="16.2" text-anchor="middle" font-family="Segoe UI, Arial" font-size="9.5" fill="#9aa0a6">!</text>
   </svg>
-  <h1>Blocked by GuardPulse</h1>
-  <p>This site is not allowed by your parent.</p>
-  <div class="rule"></div>
+  <h1>This page is blocked</h1>
+  <p id="hostline">Your organization doesn&rsquo;t allow you to view this site.</p>
+  <span class="code">ERR_BLOCKED_BY_ADMINISTRATOR</span>
 </div>
+<script>
+  try {
+    var from = new URLSearchParams(location.search).get("from");
+    if (from) {
+      var host = new URL(from.replace(/^[a-z]*:\/\//i, "http://")).hostname;
+      if (host) { document.getElementById("hostline").textContent =
+        host + " is blocked. Your organization doesn\u2019t allow you to view this site."; }
+    }
+  } catch (e) {}
+</script>
 </body>
 </html>
 """;
