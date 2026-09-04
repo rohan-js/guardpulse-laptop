@@ -108,6 +108,8 @@ public partial class LockWindow : Window
         ReasonText.Text = reason switch
         {
             "dailyLimit" => "Daily time limit reached",
+            "sessionLimit" => "Session limit reached",
+            "blockedSite" => "Blocked site",
             "manual" => "Locked by parent",
             "bypass" => "Restricted tool",
             "schedule" => "Outside allowed hours",

@@ -6,6 +6,7 @@ data class ControlAppRule(
     val packageName: String,
     val manualBlocked: Boolean = false,
     val dailyLimitMinutes: Int? = null,
+    val sessionLimitMinutes: Int? = null,
     val updatedAt: Long? = null
 )
 
@@ -424,10 +425,17 @@ object ControlProtocol {
                     if (raw !in 1L..1440L) continue
                     raw.toInt()
                 } else null
+                val sessionSnapshot = appSnapshot.child("sessionLimitMinutes")
+                val sessionLimit = if (sessionSnapshot.exists()) {
+                    val raw = sessionSnapshot.getValue(Long::class.java) ?: continue
+                    if (raw !in 1L..1440L) continue
+                    raw.toInt()
+                } else null
                 result[packageName] = ControlAppRule(
                     packageName = packageName,
                     manualBlocked = manualBlocked,
                     dailyLimitMinutes = limit,
+                    sessionLimitMinutes = sessionLimit,
                     updatedAt = appSnapshot.child("updatedAt").getValue(Long::class.java)
                 )
             } catch (_: Exception) { continue }

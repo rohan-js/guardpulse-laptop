@@ -258,6 +258,9 @@ internal fun ModeAppPolicyRow(
     var limitText by remember(modeId, app.packageName, policy.dailyLimitMinutes) {
         mutableStateOf(policy.dailyLimitMinutes?.toString().orEmpty())
     }
+    var sessionLimitText by remember(modeId, app.packageName, policy.sessionLimitMinutes) {
+        mutableStateOf(policy.sessionLimitMinutes?.toString().orEmpty())
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -329,6 +332,37 @@ internal fun ModeAppPolicyRow(
                 onClick = {
                     limitText = ""
                     onUpdateModePolicy(modeId, app.packageName, policy.copy(dailyLimitMinutes = null))
+                }
+            ) {
+                Text("Clear")
+            }
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                sessionLimitText,
+                { sessionLimitText = it.filter(Char::isDigit).take(4) },
+                label = { Text("Mode session limit") },
+                suffix = { Text("min") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    onUpdateModePolicy(
+                        modeId,
+                        app.packageName,
+                        policy.copy(sessionLimitMinutes = sessionLimitText.toIntOrNull()?.takeIf { it > 0 })
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = GuardNavy)
+            ) {
+                Text("Save")
+            }
+            OutlinedButton(
+                enabled = policy.sessionLimitMinutes != null,
+                onClick = {
+                    sessionLimitText = ""
+                    onUpdateModePolicy(modeId, app.packageName, policy.copy(sessionLimitMinutes = null))
                 }
             ) {
                 Text("Clear")

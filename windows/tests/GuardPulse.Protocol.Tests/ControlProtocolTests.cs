@@ -299,6 +299,47 @@ public class ControlProtocolTests
     }
 
     [Fact]
+    public void NonNumericSessionLimitIsInvalid()
+    {
+        AssertInvalid(
+            Variant("\"dailyLimitMinutes\": 60", "\"dailyLimitMinutes\": 60, \"sessionLimitMinutes\": \"forty\""),
+            "App session limit is invalid");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    [InlineData(1441)]
+    public void OutOfRangeSessionLimitIsInvalid(int minutes)
+    {
+        AssertInvalid(
+            Variant("\"dailyLimitMinutes\": 60", "\"dailyLimitMinutes\": 60, \"sessionLimitMinutes\": " + minutes),
+            "App session limit is out of range");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(1440)]
+    public void BoundarySessionLimitsAreValid(int minutes)
+    {
+        var result = ParseOk(Variant("\"dailyLimitMinutes\": 60", "\"dailyLimitMinutes\": 60, \"sessionLimitMinutes\": " + minutes));
+
+        Assert.Equal(minutes, result.Snapshot!.Apps["com.youtube.tv"].SessionLimitMinutes);
+    }
+
+    [Fact]
+    public void SessionLimitParsesInsideModeApp()
+    {
+        var result = ParseOk(Variant(
+            "\"packageName\": \"com.youtube.tv\", \"manualBlocked\": false, \"dailyLimitMinutes\": 30 }",
+            "\"packageName\": \"com.youtube.tv\", \"manualBlocked\": false, \"dailyLimitMinutes\": 30, \"sessionLimitMinutes\": 45 }"));
+
+        Assert.Equal(
+            45,
+            result.Snapshot!.Modes["homework"].Apps["com.youtube.tv"].SessionLimitMinutes);
+    }
+
+    [Fact]
     public void PackageKeyFieldMismatchIsInvalid()
     {
         AssertInvalid(

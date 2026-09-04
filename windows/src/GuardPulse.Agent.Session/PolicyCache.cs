@@ -35,6 +35,8 @@ internal sealed class PolicyCache
 
     public HashSet<string> DailyBlockedApps { get; private init; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public HashSet<string> SessionBlockedApps { get; private init; } = new(StringComparer.OrdinalIgnoreCase);
+
     public static PolicyCache Load()
     {
         return Load(DefaultPath);
@@ -97,6 +99,14 @@ internal sealed class PolicyCache
             }
         }
 
+        if (root.TryGetProperty("sessionBlockedApps", out var session) && session.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in session.EnumerateArray())
+            {
+                if (item.GetString() is { } appKey) cache.SessionBlockedApps.Add(appKey);
+            }
+        }
+
         _lastGood = cache;
         return cache;
     }
@@ -117,6 +127,11 @@ internal sealed class PolicyCache
         if (DailyBlockedApps.Contains(appKey))
         {
             return "dailyLimit";
+        }
+
+        if (SessionBlockedApps.Contains(appKey))
+        {
+            return "sessionLimit";
         }
 
         return null;

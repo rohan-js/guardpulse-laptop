@@ -44,6 +44,8 @@ public static class PolicyConstants
 
     public const string BLOCK_REASON_MANUAL = "manual";
     public const string BLOCK_REASON_DAILY_LIMIT = "dailyLimit";
+    public const string BLOCK_REASON_SESSION_LIMIT = "sessionLimit";
+    public const string BLOCK_REASON_BLOCKED_SITE = "blockedSite";
     public const string BLOCK_REASON_RISKY_SETTINGS = "riskySettings";
     public const string BLOCK_REASON_NETWORK_FILTER_MISSING = "networkFilterMissing";
     public const string BLOCK_REASON_SOURCE_LOCK = "sourceLock";

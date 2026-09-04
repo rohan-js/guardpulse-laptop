@@ -92,6 +92,8 @@ internal fun policyValidationMessage(app: ParentApp?, policy: ParentPolicy): Str
     app?.blockable == false -> "This app is protected: ${app.protectedReason ?: "not blockable"}"
     policy.dailyLimitMinutes != null && policy.dailyLimitMinutes !in 1..1440 ->
         "Daily limit must be between 1 and 1440 minutes"
+    policy.sessionLimitMinutes != null && policy.sessionLimitMinutes !in 1..1440 ->
+        "Session limit must be between 1 and 1440 minutes"
     else -> null
 }
 
@@ -189,7 +191,7 @@ internal fun AppsTab(
             )
             val pending = syncState.isAppPolicyPending(app.packageName)
             val requestedPolicy = syncState.desiredControl?.apps?.get(app.packageName)?.let { rule ->
-                ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes)
+                ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes, rule.sessionLimitMinutes)
             }
             AppPolicyCard(
                 app,
@@ -224,6 +226,9 @@ internal fun AppPolicyCard(
     val usageMs = effectiveUsageMs(usageState, usageNow)
     var limitText by remember(app.packageName, policy.dailyLimitMinutes) {
         mutableStateOf(policy.dailyLimitMinutes?.toString().orEmpty())
+    }
+    var sessionLimitText by remember(app.packageName, policy.sessionLimitMinutes) {
+        mutableStateOf(policy.sessionLimitMinutes?.toString().orEmpty())
     }
     var expanded by remember(app.packageName) { mutableStateOf(false) }
     var showBrowserTabs by remember(app.packageName) { mutableStateOf(false) }
@@ -340,6 +345,7 @@ internal fun AppPolicyCard(
                     state.dailyLimitBlocked -> "Daily limit lock"
                     policy.manualBlocked -> "Locked by parent"
                     policy.dailyLimitMinutes != null -> "Daily Limit Active (${policy.dailyLimitMinutes} mins)"
+                    policy.sessionLimitMinutes != null -> "Session limit (${policy.sessionLimitMinutes} min)"
                     else -> null
                 }
                 reason?.let {
@@ -438,6 +444,26 @@ internal fun AppPolicyCard(
                     OutlinedButton(enabled = app.blockable && !pending && policy.dailyLimitMinutes != null, onClick = {
                         limitText = ""
                         onUpdatePolicy(app.packageName, policy.copy(dailyLimitMinutes = null))
+                    }) { Text("Clear") }
+                }
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        sessionLimitText,
+                        { sessionLimitText = it.filter(Char::isDigit).take(4) },
+                        label = { Text("Session limit") },
+                        suffix = { Text("min") },
+                        enabled = app.blockable && !pending,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Button(enabled = app.blockable && !pending, onClick = {
+                        onUpdatePolicy(app.packageName, policy.copy(sessionLimitMinutes = sessionLimitText.toIntOrNull()?.takeIf { it > 0 }))
+                    }, colors = ButtonDefaults.buttonColors(containerColor = GuardNavy)) { Text("Save") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(enabled = app.blockable && !pending && policy.sessionLimitMinutes != null, onClick = {
+                        sessionLimitText = ""
+                        onUpdatePolicy(app.packageName, policy.copy(sessionLimitMinutes = null))
                     }) { Text("Clear") }
                 }
                 TextButton(enabled = app.blockable && !pending, onClick = { onResetToday(app.packageName) }) { Text("Reset today") }

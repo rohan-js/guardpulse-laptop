@@ -72,7 +72,13 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ---
 
-## 6. CURRENT STATE (as of 2026-09-03 — 0.2.14)
+## 6. CURRENT STATE (as of 2026-09-04 — 0.2.15)
+
+* Head: **0.2.15** — per-app SESSION limit + INSTANT site blocking.
+  - `sessionLimitMinutes` (1..1440, optional) per app + per mode app, phone-settable in Apps/Modes tabs. Semantics: N minutes of CONTINUOUS open use → lock (reason `sessionLimit`, wall text "Session limit reached"); leaving the app pauses the timer; 2 min away resets the session; UTC-day rollover resets all; PIN/unlock approvals and resetToday clear it. Warnings at 5m/1m left (session-scoped dedup keys re-arm per session).
+  - Plumbing: rules apps+mode-apps validate (deployed live), ControlAppRule (C#), ControlAppRule+parseApps (Kotlin), ParentPolicy + appPolicyValue + Apps/Modes UI fields, SessionUsageTracker (session-usage.json, AtomicFile), EnforcementEngine.Decide session arm (after dailyLimit, before nothing), WritePolicyCache `sessionBlockedApps` + PolicyCache fallback, HeartbeatAsync-independent.
+  - INSTANT site blocking: `BrowserUrlBlocker` (Service) rebuilt on every ApplyContentFilterHosts; OnBrowserReceivedAsync → EvaluateCurrentForeground; DecideFor consults the live tab URL when the reported browser IS the foreground app (snapshot <90s old) → lock reason `blockedSite` ("Blocked site"); releases when the URL leaves the block, browser loses foreground, or approval arrives (unlock path covers it). Path rules (youtube.com/shorts) match host+path with segment boundaries + query-strip; bare domains + enabled category domains match whole host incl. www twins (closes DoH bypass of hosts). Registry URLBlocklist + hosts stay as the navigation-start second layer.
+  - Tests: dotnet 140 Protocol + 135 Core; rules 37/37 (fixed pre-existing customBlockedDomains test missing the control envelope); Kotlin shared+parent green.
 
 * Head: 0.2.13 (`43facc7` + `2eee9d0`) then **0.2.14 hotfix**. 0.2.13 regression: the heartbeat started writing the real `IsStreamConnected` flag, but RTDB over REST has NO `.info/connected` events (attach value is `null`; rules deny the path) — the flag was permanently false, so the phone showed "Laptop connection: Offline" while everything worked. 0.2.14 derives liveness from real SSE traffic (keep-alives every ~30s; 75s alive window) and removes the dead `.info/connected` subscription.
 * Also fixed in 0.2.14 (same root): the `users/{uid}/devices/{id}` presence mirror was stale since pairing and the tray icon stayed visible after pairing — both caused by an empty in-memory `_ownerUid` (one-shot best-effort startup recovery). Now self-heals: throttled retry (5 min) from the heartbeat + agent hello, re-broadcasting paired state on success; heartbeat PATCHes are independently error-isolated.
@@ -124,7 +130,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 226 passing (133 Protocol + 93 Core)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 275 passing (140 Protocol + 135 Core)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)

@@ -89,6 +89,7 @@ public sealed class AgentHostedService(
     private IFirebaseClient _firebase = null!;
     private SyncEngine _syncEngine = null!;
     private UsageLedger _ledger = null!;
+    private SessionUsageTracker _sessions = null!;
     private ActivityLog _activity = null!;
     private EnforcementEngine _enforcement = null!;
     private OneVisitUnlocks _unlocks = null!;
@@ -129,6 +130,10 @@ public sealed class AgentHostedService(
     private long _lastBrowserStateAtMs;
     private string? _lastUploadedBrowserJson;
     private bool _browserUploadPending;
+
+    // Real-time blocked-site enforcement: the matcher is rebuilt on every content-policy
+    // apply; EvaluateBrowserUrlLock turns the live tab URL into a lock reason.
+    private BrowserUrlBlocker _urlBlocker = BrowserUrlBlocker.Empty;
 
     // ------------------------------------------------------------------ startup
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -406,6 +411,7 @@ public sealed class AgentHostedService(
         _firebase = new RtdbFirebaseClient(_config, _secrets);
         _syncEngine = new SyncEngine(_firebase, _secrets, _deviceId, _time);
         _ledger = new UsageLedger(_stateDir, _time);
+        _sessions = new SessionUsageTracker(Path.Combine(_stateDir, "session-usage.json"), _time);
         _activity = new ActivityLog(_stateDir, _time);
         _enforcement = new EnforcementEngine(_time);
         _unlocks = new OneVisitUnlocks(_stateDir, _time);
@@ -963,6 +969,7 @@ var minutes = ms / 60_000L;
         {
             var blocked = new JsonArray();
             var dailyBlocked = new JsonArray();
+            var sessionBlocked = new JsonArray();
             var safeMode = false;
 
             if (snapshot is not null)
@@ -979,6 +986,11 @@ var minutes = ms / 60_000L;
                         && _ledger.EffectiveUsageMsToday(appKey) >= (long)minutes * 60_000L)
                     {
                         dailyBlocked.Add(appKey);
+                    }
+                    else if (rule.SessionLimitMinutes is int sessionMinutes
+                        && _sessions.EffectiveSessionMs(appKey, NowMs()) >= (long)sessionMinutes * 60_000L)
+                    {
+                        sessionBlocked.Add(appKey);
                     }
                 }
 
@@ -997,7 +1009,8 @@ var minutes = ms / 60_000L;
                 ["writtenAtMs"] = NowMs(),
                 ["safeMode"] = safeMode,
                 ["blockedApps"] = blocked,
-                ["dailyBlockedApps"] = dailyBlocked
+                ["dailyBlockedApps"] = dailyBlocked,
+                ["sessionBlockedApps"] = sessionBlocked
             };
             TryWriteText(Path.Combine(_stateDir, "policy-cache.json"), payload.ToJsonString(JsonOpts));
 
@@ -1051,6 +1064,13 @@ var minutes = ms / 60_000L;
             }
 
             BrowserPolicyManager.ApplyUrlBlocklist(customUrls);
+
+            // Real-time layer: rebuild the URL matcher so the next browser pipe event
+            // enforces the new policy instantly (SPA navigations never re-read the
+            // registry, and DoH bypasses hosts).
+            Interlocked.Exchange(ref _urlBlocker, BrowserUrlBlocker.Build(
+                customUrls,
+                categories.Values.SelectMany(d => d)));
         }
         catch (Exception ex)
         {
@@ -1282,8 +1302,58 @@ var minutes = ms / 60_000L;
         // RTDB/server time, so a skewed local clock must not mis-arm Safe Mode or
         // extend/truncate timed unlocks.
         var serverNowMs = _syncEngine.ServerNowMs();
-        var decision = _enforcement.Decide(snapshot, appKey, _ledger, _unlocks, _agentAppKey, serverNowMs);
-        return (decision.Locked, decision.Reason);
+        var decision = _enforcement.Decide(snapshot, appKey, _ledger, _unlocks, _agentAppKey, serverNowMs, _sessions, NowMs());
+        if (decision.Locked)
+        {
+            // Policy lock (manual/daily/session/schedule/budget/allowlist) always wins;
+            // its reason is what the wall shows.
+            return (decision.Locked, decision.Reason);
+        }
+
+        var urlReason = EvaluateBrowserUrlLock(appKey, snapshot, serverNowMs);
+        return urlReason is null ? (false, "none") : (true, urlReason);
+    }
+
+    /// <summary>
+    /// Real-time blocked-site check for the CURRENT foreground browser: when the live
+    /// tab URL matches the content policy (custom sites with paths, custom/built-in
+    /// domains incl. the DNS-over-HTTPS bypass), the browser locks with reason
+    /// "blockedSite" until the tab leaves the blocked page, the browser loses
+    /// foreground, or a parent approval window covers it. Registry URLBlocklist and
+    /// hosts remain the navigation-start second layer. Returns the reason string or
+    /// null when no URL lock applies.
+    /// </summary>
+    private string? EvaluateBrowserUrlLock(string appKey, ControlSnapshotV2 snapshot, long serverNowMs)
+    {
+        if (_urlBlocker == BrowserUrlBlocker.Empty || _unlocks.IsUnlocked(appKey, serverNowMs))
+        {
+            return null;
+        }
+
+        PipeBrowserState? browser;
+        long receivedAtMs;
+        lock (_browserGate)
+        {
+            browser = _currentBrowser;
+            receivedAtMs = _lastBrowserStateAtMs;
+        }
+
+        // The URL verdict is only as good as its snapshot: require the reported browser
+        // to BE the foreground app and the report to be fresh (watcher heartbeats 60s).
+        if (browser is null
+            || !string.Equals(browser.AppKey, appKey, StringComparison.OrdinalIgnoreCase)
+            || NowMs() - receivedAtMs > 90_000)
+        {
+            return null;
+        }
+
+        var verdict = _urlBlocker.IsBlocked(browser.ActiveUrl);
+        if (!verdict.Blocked)
+        {
+            return null;
+        }
+
+        return PolicyConstants.BLOCK_REASON_BLOCKED_SITE;
     }
 
     private void ApplyDecision(string appKey, bool locked, string reason)
@@ -1515,6 +1585,9 @@ var minutes = ms / 60_000L;
                 // timestamps even when the laptop clock is skewed (one-visit grants
                 // carry no deadline, so this is a no-op for them).
                 _unlocks.GrantAt(appKey, _syncEngine.ServerNowMs());
+                // The approved visit starts a FRESH session: without this the session
+                // accumulator (still >= limit) would re-lock the app immediately.
+                _sessions.Reset(appKey);
             }
 
             _suspender.ResumeAll();
@@ -1690,6 +1763,8 @@ var minutes = ms / 60_000L;
             // Server clock: approvalDurationMs is measured from the owner's (server)
             // time, so a skewed local clock must not shorten or extend the window.
             _unlocks.GrantAt(appKey, _syncEngine.ServerNowMs(), duration);
+            // Same as the PIN path: the approved window opens a fresh session.
+            _sessions.Reset(appKey);
         }
 
         _suspender.ResumeAll();
@@ -1897,10 +1972,13 @@ var minutes = ms / 60_000L;
                     {
                         _ledger.SetResetOffset(appKey);
                     }
+
+                    _sessions.ResetAll();
                 }
                 else
                 {
                     _ledger.SetResetOffset(packageName);
+                    _sessions.Reset(packageName);
                 }
 
                 _ledger.ClearDayBlocks();
@@ -2471,6 +2549,16 @@ var minutes = ms / 60_000L;
         {
             _browserUploadPending = true; // the roll-up tick flushes within 15s
         }
+
+        // Blocked-site reaction: a URL change (including SPA pushState jumps, which the
+        // watcher reports via the omnibox) re-evaluates immediately instead of waiting
+        // for the 5s boundary tick. DecideFor includes the URL verdict, so this both
+        // engages the wall on a blocked page and releases it on navigating away.
+        if (!string.Equals(previous?.ActiveUrl, snapshot.ActiveUrl, StringComparison.Ordinal)
+            || _urlBlocker != BrowserUrlBlocker.Empty)
+        {
+            EvaluateCurrentForeground();
+        }
     }
 
     private async Task BrowserRollupTickAsync()
@@ -2922,6 +3010,11 @@ var minutes = ms / 60_000L;
     private Task BoundaryTickAsync()
     {
         EvaluateCurrentForeground();
+        lock (_gate)
+        {
+            var foreground = _currentAppKey;
+            _sessions.Tick(foreground, NowMs());
+        }
         _ledger.FlushDirty();
         CheckScreenTimeWarnings();
         if (string.IsNullOrEmpty(_ownerUid))
@@ -2991,7 +3084,41 @@ var minutes = ms / 60_000L;
             }
         }
 
-        // 2. Whole-device daily budget warning
+        // 2. App-specific session limit warning (continuous open use; re-arms each session)
+        if (!string.IsNullOrEmpty(activeKey) && activeKey != "__agent__")
+        {
+            var apps = snapshot.EffectiveApps();
+            if (apps.TryGetValue(activeKey, out var sessionRule) && sessionRule.SessionLimitMinutes is int sessionMinutes)
+            {
+                var usedSessionMs = _sessions.EffectiveSessionMs(activeKey, NowMs());
+                var sessionLimitMs = (long)sessionMinutes * 60_000L;
+                var sessionRemainingMs = sessionLimitMs - usedSessionMs;
+                var label = LabelFor(activeKey);
+                // Session-scoped dedup bucket: a fresh session (after the 2-min reset
+                // or an approval) gets a new start timestamp, so the 5m/1m toasts
+                // re-arm without waiting for the next day.
+                var sessionBucket = _sessions.SessionStartedAtMs(activeKey) / 60_000L;
+
+                if (sessionRemainingMs > 0 && sessionRemainingMs <= 5 * 60_000L && sessionRemainingMs > 60_000L)
+                {
+                    var keyS5 = $"session_5m_{activeKey}_{sessionBucket}";
+                    if (_sentWarningToastsToday.Add(keyS5))
+                    {
+                        _pipeHost.BroadcastWarningToast("GuardPulse Screen Time", $"You have 5 minutes left for {label} this session.");
+                    }
+                }
+                else if (sessionRemainingMs > 0 && sessionRemainingMs <= 60_000L)
+                {
+                    var keyS1 = $"session_1m_{activeKey}_{sessionBucket}";
+                    if (_sentWarningToastsToday.Add(keyS1))
+                    {
+                        _pipeHost.BroadcastWarningToast("GuardPulse Screen Time", $"You have 1 minute left for {label} this session.");
+                    }
+                }
+            }
+        }
+
+        // 3. Whole-device daily budget warning
         if (snapshot.Budget is { DailyLimitMinutes: > 0 } budget)
         {
             long totalUsedMs = 0;

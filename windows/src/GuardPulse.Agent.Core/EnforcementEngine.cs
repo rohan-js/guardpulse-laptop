@@ -17,7 +17,8 @@ public sealed record BlockDecision(bool Locked, string Reason, string AppKey);
 ///   7. a Windows bypass row with no rule is blocked ("manual"),
 ///   8. rule.ManualBlocked => "manual",
 ///   9. dailyLimitMinutes reached => "dailyLimit" (also marks the day blocked in the ledger),
-///  10. otherwise not locked.
+///  10. sessionLimitMinutes reached in the tracker (continuous open use) => "sessionLimit",
+///  11. otherwise not locked.
 /// </summary>
 public sealed class EnforcementEngine
 {
@@ -99,13 +100,19 @@ public sealed class EnforcementEngine
 
     /// <param name="serverNowMs">RTDB/server-clock epoch ms for Safe Mode and unlock
     /// deadline checks; null falls back to the local clock.</param>
+    /// <param name="sessions">Optional continuous-session tracker; when null, session
+    /// limits are not evaluated (pre-session-limit behavior is unchanged).</param>
+    /// <param name="nowMs">Local epoch ms handed to the tracker (day/gap math); null falls
+    /// back to the local clock.</param>
     public BlockDecision Decide(
         ControlSnapshotV2 snapshot,
         string appKey,
         UsageLedger ledger,
         OneVisitUnlocks unlocks,
         string agentAppKey,
-        long? serverNowMs = null)
+        long? serverNowMs = null,
+        SessionUsageTracker? sessions = null,
+        long? nowMs = null)
     {
         if (string.Equals(appKey, agentAppKey, StringComparison.OrdinalIgnoreCase))
         {
@@ -160,6 +167,13 @@ public sealed class EnforcementEngine
         {
             ledger.MarkDailyBlocked(appKey);
             return Locked(appKey, PolicyConstants.BLOCK_REASON_DAILY_LIMIT);
+        }
+
+        if (rule.SessionLimitMinutes is int sessionMinutes &&
+            sessions is not null &&
+            sessions.EffectiveSessionMs(appKey, nowMs ?? NowMs()) >= (long)sessionMinutes * MsPerMinute)
+        {
+            return Locked(appKey, PolicyConstants.BLOCK_REASON_SESSION_LIMIT);
         }
 
         return NotLocked(appKey);

@@ -437,6 +437,7 @@ class ParentRepository(
         "packageName" to packageName,
         "manualBlocked" to policy.manualBlocked,
         "dailyLimitMinutes" to policy.dailyLimitMinutes,
+        "sessionLimitMinutes" to policy.sessionLimitMinutes,
         "updatedAt" to ServerValue.TIMESTAMP
     )
 

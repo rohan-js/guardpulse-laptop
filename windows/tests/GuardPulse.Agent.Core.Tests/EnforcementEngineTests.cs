@@ -224,6 +224,118 @@ public class EnforcementEngineTests : IDisposable
         Assert.False(decision.Locked);
     }
 
+    // ---------------------------------------------------------- session limit
+
+    /// <summary>
+    /// Drives the tracker the way the host loop does: a tick every 60s. Sixty 60s ticks
+    /// accrue <paramref name="minutes"/> minutes of continuous open use.
+    /// </summary>
+    private SessionUsageTracker TrackerWithSession(FakeTimeProvider time, string appKey, int minutes)
+    {
+        var sessions = new SessionUsageTracker(
+            Path.Combine(this.stateDir, "sessions.json"), time);
+        var end = BaseMs + (long)minutes * 60_000;
+        for (var tick = BaseMs; tick <= end; tick += 60_000)
+        {
+            time.SetUtcNow(tick);
+            sessions.Tick(appKey, tick);
+        }
+
+        return sessions;
+    }
+
+    [Fact]
+    public void SessionLimitReached_LocksWithSessionLimitReason()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = TrackerWithSession(time, GameAppKey, 20); // 20 continuous minutes
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 20)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+
+        Assert.True(decision.Locked);
+        Assert.Equal("sessionLimit", decision.Reason);
+        Assert.Equal(GameAppKey, decision.AppKey);
+    }
+
+    [Fact]
+    public void SessionLimit_BelowLimit_IsNotLocked()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = TrackerWithSession(time, GameAppKey, 10); // 10 continuous minutes
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 20)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+
+        Assert.False(decision.Locked);
+    }
+
+    [Fact]
+    public void SessionLimit_WithoutLimitMinutes_NeverLocks()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = TrackerWithSession(time, GameAppKey, 24 * 60);
+        var snapshot = Snapshot(apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+
+        Assert.False(decision.Locked);
+    }
+
+    [Fact]
+    public void SessionLimit_DoesNotChangeBehaviorWhenTrackerNotWired()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 20)));
+
+        var decision = engine.Decide(snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey);
+
+        Assert.False(decision.Locked); // sessions=null: pre-session-limit behavior
+    }
+
+    [Fact]
+    public void SessionLimit_ResetByTracker_Unlocks()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = TrackerWithSession(time, GameAppKey, 20); // limit reached
+        sessions.Reset(GameAppKey);                              // unlock approval / resetToday
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 20)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), Unlocks(), AgentAppKey, sessions: sessions);
+
+        Assert.False(decision.Locked);
+    }
+
+    [Fact]
+    public void Unlock_OverridesSessionLimit()
+    {
+        var time = new FakeTimeProvider(BaseMs);
+        var engine = new EnforcementEngine(time);
+        var sessions = TrackerWithSession(time, GameAppKey, 20); // limit reached
+        var unlocks = Unlocks();
+        unlocks.Grant(GameAppKey);
+        var snapshot = Snapshot(
+            apps: Apps(new ControlAppRule(GameAppKey, ManualBlocked: false, SessionLimitMinutes: 20)));
+
+        var decision = engine.Decide(
+            snapshot, GameAppKey, Ledger(), unlocks, AgentAppKey, sessions: sessions);
+
+        Assert.False(decision.Locked); // the unlock arm runs before the session-limit arm
+    }
+
     // ----------------------------------------------------------- mode override
 
     [Fact]

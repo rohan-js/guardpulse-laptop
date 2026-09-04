@@ -25,7 +25,8 @@ data class ParentApp(
 
 data class ParentPolicy(
     val manualBlocked: Boolean = false,
-    val dailyLimitMinutes: Int? = null
+    val dailyLimitMinutes: Int? = null,
+    val sessionLimitMinutes: Int? = null
 )
 
 data class ParentMode(
@@ -236,14 +237,14 @@ data class ParentSyncUiState(
 )
 
 internal fun ControlSnapshotV2.toParentPolicies(): Map<String, ParentPolicy> =
-    apps.mapValues { (_, rule) -> ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes) }
+    apps.mapValues { (_, rule) -> ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes, rule.sessionLimitMinutes) }
 
 internal fun ControlSnapshotV2.toParentModes(): List<ParentMode> = modes.values.map { mode ->
     ParentMode(
         modeId = mode.modeId,
         name = mode.name,
         appPolicies = mode.apps.mapValues { (_, rule) ->
-            ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes)
+            ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes, rule.sessionLimitMinutes)
         },
         createdAt = mode.createdAt,
         updatedAt = mode.updatedAt
@@ -269,5 +270,6 @@ internal fun ParentSyncUiState.isAppPolicyPending(packageName: String): Boolean 
     val desiredRule = desired.apps[packageName]
     val confirmedRule = confirmed.apps[packageName]
     return desiredRule?.manualBlocked != confirmedRule?.manualBlocked ||
-        desiredRule?.dailyLimitMinutes != confirmedRule?.dailyLimitMinutes
+        desiredRule?.dailyLimitMinutes != confirmedRule?.dailyLimitMinutes ||
+        desiredRule?.sessionLimitMinutes != confirmedRule?.sessionLimitMinutes
 }

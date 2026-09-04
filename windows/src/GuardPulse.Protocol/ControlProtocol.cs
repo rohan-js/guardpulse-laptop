@@ -504,10 +504,28 @@ public static class ControlProtocol
                 dailyLimitMinutes = (int)raw.Value;
             }
 
+            int? sessionLimitMinutes = null;
+            if (Exists(appElement, "sessionLimitMinutes"))
+            {
+                var raw = GetLong(appElement, "sessionLimitMinutes");
+                if (raw == null)
+                {
+                    throw Fail("App session limit is invalid");
+                }
+
+                if (raw < 1 || raw > PolicyConstants.MAX_DAILY_LIMIT_MINUTES)
+                {
+                    throw Fail("App session limit is out of range");
+                }
+
+                sessionLimitMinutes = (int)raw.Value;
+            }
+
             result[packageName] = new ControlAppRule(
                 packageName,
                 manualBlocked.Value,
                 dailyLimitMinutes,
+                sessionLimitMinutes,
                 GetLong(appElement, "updatedAt"));
         }
 

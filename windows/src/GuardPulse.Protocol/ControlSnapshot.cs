@@ -11,6 +11,7 @@ namespace GuardPulse.Protocol
         string PackageName,
         bool ManualBlocked,
         int? DailyLimitMinutes = null,
+        int? SessionLimitMinutes = null,
         long? UpdatedAt = null);
 
     /// <summary>A named mode with its own app rules. Map key equals ModeId.</summary>

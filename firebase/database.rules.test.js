@@ -820,28 +820,37 @@ test("device can report schedule budget filter and allowlist runtime flags", asy
 test("parent writes custom blocked domains with valid domains and paths only", async () => {
   // Valid: plain domains, and path entries like youtube.com/shorts.
   await assertSucceeds(
-    dbAs("parentUid").ref("devices/tv1/control/v2").update({
-      customBlockedDomains: {
-        "0": "example.com",
-        "1": "youtube.com/shorts",
-      },
-    })
+    dbAs("parentUid").ref("devices/tv1/control/v2").set(
+      baseControl({
+        revisionId: "rev-domains-1",
+        customBlockedDomains: {
+          "0": "example.com",
+          "1": "youtube.com/shorts",
+        },
+      })
+    )
   );
 
   // Invalid: not a domain-shaped string, and over the 253-char limit.
   await assertFails(
-    dbAs("parentUid").ref("devices/tv1/control/v2").update({
-      customBlockedDomains: {
-        "0": "not a domain",
-      },
-    })
+    dbAs("parentUid").ref("devices/tv1/control/v2").set(
+      baseControl({
+        revisionId: "rev-domains-2",
+        customBlockedDomains: {
+          "0": "not a domain",
+        },
+      })
+    )
   );
   await assertFails(
-    dbAs("parentUid").ref("devices/tv1/control/v2").update({
-      customBlockedDomains: {
-        "0": "a".repeat(254) + ".com",
-      },
-    })
+    dbAs("parentUid").ref("devices/tv1/control/v2").set(
+      baseControl({
+        revisionId: "rev-domains-3",
+        customBlockedDomains: {
+          "0": "a".repeat(254) + ".com",
+        },
+      })
+    )
   );
 });
 
@@ -1017,5 +1026,68 @@ test("tab timeline entries may carry a page url (browser tab sessions)", async (
     dbAs("tvUid")
       .ref("devices/tv1/activity/history/tab-url-2")
       .set({ ...tabEntry, id: "tab-url-2", url: "x".repeat(3000) })
+  );
+});
+
+test("sessionLimitMinutes: valid per-app value accepted on control apps and mode apps", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/control/v2").set(
+      baseControl({
+        revisionId: "rev-session-1",
+        apps: {
+          Y29tLnZpZGVv: {
+            packageKey: "Y29tLnZpZGVv",
+            packageName: "com.video",
+            manualBlocked: false,
+            dailyLimitMinutes: 60,
+            sessionLimitMinutes: 45,
+            updatedAt: 1,
+          },
+        },
+        modes: {
+          mode1: {
+            modeId: "mode1",
+            name: "Homework",
+            updatedBy: "parentUid",
+            apps: {
+              Y29tLnZpZGVv: {
+                packageKey: "Y29tLnZpZGVv",
+                packageName: "com.video",
+                manualBlocked: false,
+                sessionLimitMinutes: 1,
+                updatedAt: 2,
+              },
+            },
+          },
+        },
+      })
+    )
+  );
+});
+
+test("sessionLimitMinutes: out-of-range values rejected", async () => {
+  for (const bad of [0, -5, 1441, "yes", true]) {
+    await assertFails(
+      dbAs("parentUid").ref("devices/tv1/control/v2/apps/Y29tLnZpZGVv").set({
+        packageKey: "Y29tLnZpZGVv",
+        packageName: "com.video",
+        manualBlocked: false,
+        sessionLimitMinutes: bad,
+        updatedAt: 3,
+      })
+    );
+  }
+});
+
+test("sessionLimitMinutes: rejected on state apps (agent-written node)", async () => {
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/state/apps/Y29tLnZpZGVv").set({
+      packageName: "com.video",
+      requestedSuspended: false,
+      enforcementMode: "fallback",
+      fallbackLocked: false,
+      usageMinutesToday: 1,
+      sessionLimitMinutes: 45,
+    })
   );
 });
