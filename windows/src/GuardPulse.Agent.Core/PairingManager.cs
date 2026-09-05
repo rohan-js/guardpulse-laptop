@@ -18,6 +18,14 @@ public sealed class PairingManager
     private const string SecretKey = "pairing.secret";
     private const string CodeKey = "pairing.code";
     private const string CreatedAtKey = "pairing.createdAt";
+    // One-deep grace: when credentials rotate, the outgoing generation stays valid
+    // for another full TTL. The setup window re-renders every 2s, so a QR scanned
+    // one minute before a rotation boundary would otherwise validate FALSE one
+    // minute after it — a permanent-looking "pairing rejected" loop from the user's
+    // side. Only ONE old generation is kept (two at most are ever live).
+    private const string PrevSecretKey = "pairing.prevSecret";
+    private const string PrevCodeKey = "pairing.prevCode";
+    private const string PrevCreatedAtKey = "pairing.prevCreatedAt";
 
     private readonly ISecretStore _secrets;
     private readonly object _gate = new();
@@ -66,8 +74,10 @@ public sealed class PairingManager
     }
 
     /// <summary>
-    /// True when the presented secret OR manual code matches the current credentials AND the
-    /// pair request was created within the pairing TTL (10 minutes). Mirrors TV isValid.
+    /// True when the presented secret OR manual code matches the current OR the
+    /// immediately-previous generation AND the pair request was created within the
+    /// pairing TTL (10 minutes). Mirrors TV isValid, plus the rotation-boundary
+    /// grace described on the prev* keys.
     /// </summary>
     public bool Validate(string? secret, string? code, long createdAtMs, long nowMs)
     {
@@ -77,8 +87,33 @@ public sealed class PairingManager
         }
 
         var current = Current; // rotates stale credentials, so an old secret stops matching
-        return (!string.IsNullOrWhiteSpace(secret) && secret == current.Secret)
+        var currentMatch =
+            (!string.IsNullOrWhiteSpace(secret) && secret == current.Secret)
             || (!string.IsNullOrWhiteSpace(code) && code == current.ManualCode);
+        if (currentMatch)
+        {
+            return true;
+        }
+
+        // Rotation-boundary grace: the request may carry the generation that was
+        // current when the user scanned the QR a minute before a rotation.
+        string? prevSecret;
+        string? prevCode;
+        long? prevCreatedAt;
+        lock (_gate)
+        {
+            prevSecret = _secrets.Get(PrevSecretKey);
+            prevCode = _secrets.Get(PrevCodeKey);
+            prevCreatedAt = ParseLong(_secrets.Get(PrevCreatedAtKey));
+        }
+
+        if (prevCreatedAt is null || nowMs - prevCreatedAt.Value > PolicyConstants.PAIRING_TTL_MS)
+        {
+            return false;
+        }
+
+        return (!string.IsNullOrWhiteSpace(secret) && secret == prevSecret)
+            || (!string.IsNullOrWhiteSpace(code) && code == prevCode);
     }
 
     /// <summary>Generates and persists a fresh secret + manual code (deviceId unchanged).</summary>
@@ -92,6 +127,17 @@ public sealed class PairingManager
 
     private (string Secret, string Code, long CreatedAt) RotateLocked()
     {
+        // Preserve the outgoing generation as the one-deep grace BEFORE overwriting.
+        var oldSecret = _secrets.Get(SecretKey);
+        var oldCode = _secrets.Get(CodeKey);
+        var oldCreatedAt = _secrets.Get(CreatedAtKey);
+        if (!string.IsNullOrWhiteSpace(oldSecret) && !string.IsNullOrWhiteSpace(oldCode))
+        {
+            _secrets.Set(PrevSecretKey, oldSecret);
+            _secrets.Set(PrevCodeKey, oldCode);
+            _secrets.Set(PrevCreatedAtKey, oldCreatedAt ?? "0");
+        }
+
         var secretBytes = RandomNumberGenerator.GetBytes(32);
         var secret = ToBase64Url(secretBytes);
         var code = RandomNumberGenerator.GetInt32(100_000, 1_000_000).ToString(System.Globalization.CultureInfo.InvariantCulture);

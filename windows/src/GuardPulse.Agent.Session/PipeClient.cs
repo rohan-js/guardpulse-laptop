@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json.Nodes;
 using System.IO.Pipes;
@@ -200,6 +200,11 @@ public sealed class PipeClient : IDisposable
         {
             MessageReceived?.Invoke(element);
         }
+    }
+
+    public void SendTabClosed(string url)
+    {
+        Send(new { t = "tabClosed", url });
     }
 
     public void SendForeground(string appKey, string exePath, string? windowTitle)

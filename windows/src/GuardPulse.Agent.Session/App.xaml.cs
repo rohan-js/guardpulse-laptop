@@ -242,6 +242,29 @@ public partial class App : Application
                     var toastMsg = message.TryGetProperty("message", out var tm) ? tm.GetString() ?? "" : "";
                     ToastWindow.ShowToast(toastTitle, toastMsg);
                     break;
+                case "tabRules":
+                {
+                    var domains = new List<string>();
+                    var paths = new List<string>();
+                    if (message.TryGetProperty("domains", out var td) && td.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var item in td.EnumerateArray())
+                        {
+                            if (item.GetString() is { Length: > 0 } dm) domains.Add(dm);
+                        }
+                    }
+
+                    if (message.TryGetProperty("paths", out var tp) && tp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var item in tp.EnumerateArray())
+                        {
+                            if (item.GetString() is { Length: > 0 } pp) paths.Add(pp);
+                        }
+                    }
+
+                    _browserWatcher?.SetTabRules(new TabRules { Domains = domains, Paths = paths });
+                    break;
+                }
                 case "showMessage":
                     var parentText = message.TryGetProperty("text", out var mt) ? mt.GetString() ?? "" : "";
                     if (!string.IsNullOrWhiteSpace(parentText))

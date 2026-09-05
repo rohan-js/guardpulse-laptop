@@ -62,6 +62,9 @@ public sealed class BrowserWatcher : IDisposable
     private BrowserSnapshot? _lastSent;
     private long _lastSentAtMs;
     private nint _lastBrowserHwnd;
+    private TabRules _tabRules = new();
+    private string? _lastClosedUrl;
+    public event Action<string>? BlockedTabClosed;
     private string? _lastBrowserExePath;
     private long _browserFocusLostAtMs;
     private bool _graceSnapshotSent;
@@ -84,6 +87,12 @@ public sealed class BrowserWatcher : IDisposable
 
     // Named handlers (not `_ =>` lambdas): a lambda parameter named `_` would turn
     // the `_ = Task` discard into an assignment to that parameter.
+    /// <summary>Replaces the blocked-site rule set (service pushes on every policy apply).</summary>
+    public void SetTabRules(TabRules rules)
+    {
+        _tabRules = rules ?? new TabRules();
+    }
+
     private void OnTick() => _ = ScanAsync(immediate: false);
 
     private void OnForegroundChangedScan(string appKey) => _ = ScanAsync(immediate: true);
@@ -107,6 +116,7 @@ public sealed class BrowserWatcher : IDisposable
                 }
 
                 MaybeSend(snapshot);
+                EnforceTabRules(scan.BrowserHwnd, snapshot);
             }
             else
             {
@@ -150,6 +160,45 @@ public sealed class BrowserWatcher : IDisposable
         {
             _scanGate.Release();
         }
+    }
+
+    /// <summary>Real-time blocked-site enforcement: the active tab's URL matches the
+    /// rule set -> close THAT tab via UIA (no keystrokes, no focus change). One close
+    /// attempt per scan; the guard avoids repeat invocations while the URL persists.</summary>
+    private void EnforceTabRules(nint browserHwnd, BrowserSnapshot snapshot)
+    {
+        if (_tabRules.IsEmpty || browserHwnd == nint.Zero) return;
+        var url = snapshot.ActiveUrl;
+        var match = _tabRules.Match(url);
+        if (match is null)
+        {
+            if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
+            {
+                _lastClosedUrl = null; // navigated away from the blocked page
+            }
+
+            return;
+        }
+
+        if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
+        {
+            return; // close already attempted for this exact URL this scan cycle
+        }
+
+        _lastClosedUrl = url;
+        var dispatcher = _dispatcher;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (!TabEnforcer.CloseSelectedTab(browserHwnd)) return;
+                _pipe.SendTabClosed(url);
+            }
+            catch
+            {
+                // window/tab vanished mid-close; the next scan re-evaluates
+            }
+        });
     }
 
     private ScanResult CaptureForeground()

@@ -9,7 +9,7 @@ param(
     [string]$ApiKey,
     [Parameter(Mandatory = $true)]
     [string]$ProjectId,
-    [string]$DatabaseUrl = "https://guardpulse-laptop-control-mumbai.asia-southeast1.firebasedatabase.app",
+    [string]$DatabaseUrl = "https://guardpulse-laptop-control-default-rtdb.firebaseio.com",
     [string]$SourceDir = ""
 )
 

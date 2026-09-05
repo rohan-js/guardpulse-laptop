@@ -74,10 +74,14 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ## 6. CURRENT STATE (as of 2026-09-04 — 0.2.15)
 
-* Head: **0.2.25** — sticky session lock + parent messages.
-  - SESSION LIMIT IS STICKY: SessionUsageTracker carries a persisted per-app `SessionLocked` flag; the enforcement arm marks it the moment the limit fires and consults it first. Once locked, the app stays locked through away-gaps/app switches/Escape/day rollover — cleared ONLY by parent approval, correct PIN, or Reset-Today (each starts a fresh session). The old 2-min-away auto-rearm is gone.
-  - PARENT MESSAGES: phone Devices tab per-device input -> RTDB devices/{id}/messages (owner-create/delete, 1-500 chars, rules DEPLOYED) -> laptop SSE stream + 5s poll -> white toast "Message from Parent" 12s (ToastWindow duration param) -> node deleted after display; >10min backlog skipped; 24h retention.
-* Install: DeviceServiceSetup-0.2.25.exe + LAPTOP-PARENT-0.2.25-release.apk (phone).
+* Head: **0.2.30** — pairing made permanent. PairingManager keeps a one-deep
+  rotation grace (validate matches current OR immediately-previous secret/code
+  within TTL — kills the rotation-boundary rejection loop); credential-mismatch
+  on an unowned device now responds "expired" (retryable) instead of "rejected"
+  (terminal). All shipped defaults reverted to the LIVE US database; Singapore
+  URL kept only in `firebase/cutover-singapore.properties` staging until the new
+  instance exists. Rules deployed to guardpulse-laptop-control (pairRequests
+  owner re-pair + messages node).
 * Paired device: `129b2e39670b44ebadb305a7bd91b6b9` (this machine, DESKTOP-4ILVI11). Legacy ids `52053ba0…`/`4f2dde5e…` are orphans.
 * Windows tests green: 133 Protocol + 93 Core (226 total).
 * Firebase rules deployed live to `guardpulse-laptop-control` (unchanged by 0.2.14 — no new keys).

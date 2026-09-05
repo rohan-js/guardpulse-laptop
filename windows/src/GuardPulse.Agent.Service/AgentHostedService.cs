@@ -2231,7 +2231,12 @@ var minutes = ms / 60_000L;
                 createdAt,
                 now))
         {
-            await RespondToPairRequestAsync(requestId, "rejected");
+            // "expired" (retryable), NOT "rejected" (terminal): a credential mismatch
+            // usually means the QR was scanned across a rotation boundary (the grace
+            // covers the immediately-previous generation) or the phone still shows a
+            // stale code. The parent can simply re-scan; a "rejected" would make the
+            // phone treat the pairing as dead and loop on the same stale code.
+            await RespondToPairRequestAsync(requestId, "expired");
             return;
         }
 
