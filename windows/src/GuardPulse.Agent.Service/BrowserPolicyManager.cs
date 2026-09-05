@@ -117,37 +117,52 @@ public static class BrowserPolicyManager
     }
 
     /// <summary>
-    /// Force-installs the Site Guard extension into Chrome/Edge/Brave via enterprise
-    /// policy. The extension provides real-time per-tab blocking (SPA navigations and
-    /// already-open tabs) that registry URLBlocklist alone cannot cover. updateUrl is
-    /// served by the agent's loopback BlocklistServer.
+    /// Builds the per-tab rule set for the session agent's real-time UIA tab-close
+    /// enforcement: whole-domain rules (subdomains implied by the agent's suffix walk)
+    /// + host/prefix path rules, from the same inputs the hosts file uses.
     /// </summary>
-    public static void ApplyExtensionForceInstall(string extensionId, string updateUrl)
+    public static (IReadOnlyList<string> Domains, IReadOnlyList<string> Paths) BuildTabRules(
+        IEnumerable<string> customEntries, IEnumerable<string> categoryDomains)
     {
-        if (string.IsNullOrWhiteSpace(extensionId) || string.IsNullOrWhiteSpace(updateUrl)) return;
+        var domains = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        var paths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var basePath in ChromiumPolicyPaths)
+        foreach (var raw in customEntries ?? Enumerable.Empty<string>())
         {
-            try
-            {
-                using var baseKey = Registry.LocalMachine.CreateSubKey(basePath);
-                if (baseKey == null) continue;
-                using var listKey = baseKey.CreateSubKey("ExtensionInstallForcelist");
-                listKey?.SetValue("1", $"{extensionId};{updateUrl}", RegistryValueKind.String);
-
-                // The CRX download source must be explicitly allowed on some
-                // Chromium versions/channels even under forcelist.
-                var origin = updateUrl.Substring(0, updateUrl.LastIndexOf('/') + 1);
-                using var sourcesKey = baseKey.CreateSubKey("ExtensionInstallSources");
-                sourcesKey?.SetValue("1", origin + "*", RegistryValueKind.String);
-
-                // Modern equivalent policy (Brave/Edge quirks): per-extension settings.
-                using var settingsKey = baseKey.CreateSubKey("ExtensionSettings");
-                using var extKey = settingsKey.CreateSubKey(extensionId);
-                extKey?.SetValue("installation_mode", "force_installed", RegistryValueKind.String);
-                extKey?.SetValue("update_url", updateUrl, RegistryValueKind.String);
-            }
-            catch { }
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            var entry = raw.Trim();
+            if (entry.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) entry = entry[7..];
+            else if (entry.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) entry = entry[8..];
+            var slash = entry.IndexOf('/');
+            var host = (slash >= 0 ? entry[..slash] : entry).TrimEnd('.').TrimStart('.').ToLowerInvariant();
+            var prefix = slash >= 0 ? entry[slash..] : "";
+            var q = prefix.IndexOf('?');
+            if (q >= 0) prefix = prefix[..q];
+            if (prefix.Length <= 1) prefix = "";
+            if (host.Length == 0 || host.Length > 253 || host.Contains("..", StringComparison.Ordinal)) continue;
+            if (!HostCharsValid(host)) continue;
+            domains.Add(host);
+            if (prefix.Length > 0) paths.Add(host + prefix);
         }
+
+        foreach (var raw in categoryDomains ?? Enumerable.Empty<string>())
+        {
+            var host = raw.Trim().TrimEnd('.').ToLowerInvariant();
+            if (host.Length == 0 || host.Length > 253) continue;
+            if (!HostCharsValid(host)) continue;
+            domains.Add(host);
+        }
+
+        return (domains.ToList(), paths.ToList());
+    }
+
+    private static bool HostCharsValid(string host)
+    {
+        foreach (var ch in host)
+        {
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.')) return false;
+        }
+
+        return true;
     }
 }

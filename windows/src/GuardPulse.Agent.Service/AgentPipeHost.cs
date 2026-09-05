@@ -52,6 +52,8 @@ internal sealed class AgentPipeHost : IDisposable
     /// <summary>Live browser tab snapshot from the agent's BrowserWatcher.</summary>
     public event Action<PipeBrowserState>? BrowserReceived;
 
+    public event Action<string>? TabClosedReceived;
+
     /// <summary>PIN digits collected by the agent; the service verifies.</summary>
     public event Action<string>? PinReceived;
 
@@ -341,6 +343,18 @@ internal sealed class AgentPipeHost : IDisposable
                     break;
                 }
 
+                case "tabClosed":
+                {
+                    var url = root.TryGetProperty("url", out var turl)
+                        && turl.ValueKind == JsonValueKind.String ? turl.GetString() : null;
+                    if (!string.IsNullOrEmpty(url))
+                    {
+                        TabClosedReceived?.Invoke(url);
+                    }
+
+                    break;
+                }
+
                 case "deviceInfo":
                 {
                     // Setup window asking for the pairing credentials (deviceId + QR
@@ -458,6 +472,11 @@ internal sealed class AgentPipeHost : IDisposable
 
     public void BroadcastWarningToast(string title, string message) =>
         Broadcast(new { t = "warningToast", title, message });
+
+    /// <summary>Pushes the per-tab blocked-site rules to the session agent (real-time
+    /// tab enforcement — the agent closes matching tabs via UIA on the next scan).</summary>
+    public void BroadcastTabRules(IReadOnlyList<string> domains, IReadOnlyList<string> paths) =>
+        Broadcast(new { t = "tabRules", domains, paths });
 
     public void BroadcastShowMessage(string text) =>
         Broadcast(new { t = "showMessage", text });

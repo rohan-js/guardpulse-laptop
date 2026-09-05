@@ -3,7 +3,7 @@
 ; credentials in the wizard, and configures the service, Safe Boot keys, ACLs,
 ; and Run-key fallback — all elevated, all silent.
 
-#define AppVersion "0.2.26"
+#define AppVersion "0.2.28"
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"
 
@@ -108,7 +108,7 @@ begin
   // The API key comes from the build-time define (gitignored firebase-local.iss).
   FirebasePage.Values[0] := '{#FirebaseApiKey}';
   FirebasePage.Values[1] := 'guardpulse-laptop-control';
-  FirebasePage.Values[2] := 'https://guardpulse-laptop-control-default-rtdb.firebaseio.com';
+  FirebasePage.Values[2] := 'https://guardpulse-laptop-control-mumbai.asia-southeast1.firebasedatabase.app';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
