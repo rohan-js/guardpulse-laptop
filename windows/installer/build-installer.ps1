@@ -183,7 +183,7 @@ if (-not (Test-Path $Issc)) { throw "ISCC.exe not found at $Issc" }
 & $Issc /O"$OutputDir" "$IssFile"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.23.exe"
+$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.26.exe"
 if (Test-Path $ExePath) {
     Write-Host ""
     Write-Host "=== BUILD COMPLETE ===" -ForegroundColor Green

@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core;
+﻿namespace GuardPulse.Agent.Core;
 
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -25,12 +25,12 @@ public sealed class SyncEngine
     // feeds the same handler; the raw-content dedup skips identical snapshots. Fast
     // (5s) while degraded so a parent lock lands in seconds; skipped entirely while
     // the stream is confirmed healthy - SSE pushes make the poll redundant there.
-    private const int ControlPollIntervalMs = 5_000;
+    private const int ControlPollIntervalMs = 2_000;
     // How long after the last received SSE line (data frame OR keep-alive; RTDB sends
     // keep-alives every ~30s) the stream is considered alive. Must exceed the
     // keep-alive period, or a healthy-but-idle stream would look dead and trigger
     // endless redundant polling.
-    private static readonly TimeSpan StreamAliveWindow = TimeSpan.FromSeconds(75);
+    private static readonly TimeSpan StreamAliveWindow = TimeSpan.FromSeconds(50);
     // Bounded retries for the sync/applied ack so a transient PATCH failure (rules or
     // transport) never strands the parent on "Waiting for laptop" forever.
     private const int AckMaxAttempts = 3;
@@ -61,11 +61,12 @@ public sealed class SyncEngine
     private long _serverOffsetMs;
     private int _dispatchGeneration;
     private bool _started;
-    // Ticks (DateTime.UtcNow-based) of the last received SSE line across the engine's
-    // device streams. RTDB over REST has NO .info/connected events (the attach value is
-    // null and rules deny that path), so stream liveness is derived from actual traffic:
-    // keep-alives every ~30s while idle, data pushes when anything changes.
-    private long _lastStreamFrameTicks;
+    // Per-stream liveness: RTDB over REST has NO .info/connected events (the attach
+    // value is null and rules deny that path), so stream health is derived from actual
+    // traffic — keep-alives every ~30s per CONNECTION while idle. PER-STREAM matters:
+    // a shared recency would let a silently-dead CONTROL stream hide behind healthy
+    // desired/commands streams and blind the agent to parent writes.
+    private readonly Dictionary<string, long> _streamFrameTicks = new(StringComparer.Ordinal);
     private DeviceRegistrar? _registrar;
 
     public SyncEngine(IFirebaseClient firebase, ISecretStore secrets, string deviceId, TimeProvider time)
@@ -145,7 +146,12 @@ public sealed class SyncEngine
     {
         get
         {
-            var last = Interlocked.Read(ref _lastStreamFrameTicks);
+            long last;
+            lock (_gate)
+            {
+                _streamFrameTicks.TryGetValue(FirebasePaths.DeviceControlV2(_deviceId), out last);
+            }
+
             return last != 0
                 && _time.GetUtcNow().UtcDateTime - new DateTime(last, DateTimeKind.Utc) <= StreamAliveWindow;
         }
@@ -494,7 +500,7 @@ public sealed class SyncEngine
                 onData,
                 error => StreamError?.Invoke(path, error),
                 ct,
-                onActivity: NoteStreamActivity);
+                onActivity: () => NoteStreamActivity(path));
             lock (_gate)
             {
                 _streams.Add(stream);
@@ -574,11 +580,37 @@ public sealed class SyncEngine
         }
     }
 
-    /// <summary>Records a received SSE line (data frame or keep-alive) as proof of stream
-    /// liveness. Called from the firebase client's onActivity callback.</summary>
-    public void NoteStreamActivity()
+    /// <summary>Records a received SSE line (data frame or keep-alive) as proof of
+    /// liveness for ONE stream. Called from the client's onActivity callback.</summary>
+    public void NoteStreamActivity(string path)
     {
-        Interlocked.Exchange(ref _lastStreamFrameTicks, _time.GetUtcNow().UtcDateTime.Ticks);
+        lock (_gate)
+        {
+            _streamFrameTicks[path] = _time.GetUtcNow().UtcDateTime.Ticks;
+        }
+    }
+
+    /// <summary>End-to-end phone→laptop latency for the newest desired revision:
+    /// server-corrected now minus the phone's server-stamped requestedAt. Null when
+    /// unknown or implausible (clock skew guard).</summary>
+    public long? PipelineLatencyMs
+    {
+        get
+        {
+            SyncDesiredRevision? desired;
+            lock (_gate)
+            {
+                desired = _pendingDesired;
+            }
+
+            if (desired?.RequestedAt is not long requestedAt)
+            {
+                return null;
+            }
+
+            var delta = ServerNowMs() - requestedAt;
+            return delta is >= 0 and <= 120_000 ? delta : null;
+        }
     }
 
     private void HandleControlData(string? raw)

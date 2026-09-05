@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core.Tests;
+﻿namespace GuardPulse.Agent.Core.Tests;
 
 using GuardPulse.Agent.Core;
 using GuardPulse.Protocol;
@@ -25,7 +25,7 @@ public sealed class SyncEngineStreamHealthTests
     public void IsStreamConnected_TrueAfterActivity_WithinWindow()
     {
         var (engine, _, time) = Harness();
-        engine.NoteStreamActivity();
+        engine.NoteStreamActivity(ControlPath);
         time.Advance(TimeSpan.FromSeconds(30)); // one missed keep-alive period
         Assert.True(engine.IsStreamConnected);
     }
@@ -34,7 +34,7 @@ public sealed class SyncEngineStreamHealthTests
     public void IsStreamConnected_FalseAfterWindowExpires()
     {
         var (engine, _, time) = Harness();
-        engine.NoteStreamActivity();
+        engine.NoteStreamActivity(ControlPath);
         time.Advance(TimeSpan.FromSeconds(76)); // beyond the 75s alive window
         Assert.False(engine.IsStreamConnected);
     }
@@ -43,10 +43,10 @@ public sealed class SyncEngineStreamHealthTests
     public void IsStreamConnected_RecoversOnNextActivity()
     {
         var (engine, _, time) = Harness();
-        engine.NoteStreamActivity();
+        engine.NoteStreamActivity(ControlPath);
         time.Advance(TimeSpan.FromMinutes(10));
         Assert.False(engine.IsStreamConnected);
-        engine.NoteStreamActivity();
+        engine.NoteStreamActivity(ControlPath);
         Assert.True(engine.IsStreamConnected);
     }
 
@@ -54,13 +54,25 @@ public sealed class SyncEngineStreamHealthTests
     public void NoteStreamActivity_ConcurrentCalls_KeepLatestTimestamp()
     {
         var (engine, _, time) = Harness();
-        engine.NoteStreamActivity();
+        engine.NoteStreamActivity(ControlPath);
         time.Advance(TimeSpan.FromSeconds(5));
-        engine.NoteStreamActivity();
-        time.Advance(TimeSpan.FromSeconds(60)); // only 60s past the LAST activity
+        engine.NoteStreamActivity(ControlPath);
+        time.Advance(TimeSpan.FromSeconds(40)); // only 40s past the LAST activity
         Assert.True(engine.IsStreamConnected);
-        time.Advance(TimeSpan.FromSeconds(20));
+        time.Advance(TimeSpan.FromSeconds(20)); // 60s > 50s window
         Assert.False(engine.IsStreamConnected);
+    }
+
+    private static readonly string ControlPath = FirebasePaths.DeviceControlV2("test-device");
+
+    [Fact]
+    public void IsStreamConnected_MaskingFix_ActivityOnOtherStreamDoesNotCoverControlStream()
+    {
+        var (engine, _, time) = Harness();
+        engine.NoteStreamActivity("devices/d/commands"); // other stream alive
+        Assert.False(engine.IsStreamConnected);          // control stream silent -> poll gate open
+        engine.NoteStreamActivity(ControlPath);
+        Assert.True(engine.IsStreamConnected);
     }
 
     private static (SyncEngine Engine, FakeFirebaseClient Firebase, FakeTimeProvider Time) Harness()

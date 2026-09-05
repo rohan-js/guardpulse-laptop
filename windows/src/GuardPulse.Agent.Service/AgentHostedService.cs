@@ -922,21 +922,24 @@ var minutes = ms / 60_000L;
         {
             _logger.LogInformation("Applying control revision {RevisionId}", snapshot.RevisionId);
 
-            WritePolicyCache(snapshot);
+            // ENFORCEMENT FIRST: the suspend/wall lands before ANY disk write. A slow
+            // disk or AV scan on policy-cache.json used to gate every lock here.
             EvaluateCurrentForeground();
+            _ = Task.Run(() => WritePolicyCache(snapshot));
 
             _ = Task.Run(async () =>
             {
-                // Ack FIRST: the parent's Sync card must reflect enforcement even when the
-                // per-app state upload below fails (it used to gate the ack, leaving
-                // sync/applied stale on upload errors).
+                // Ack FIRST (before the hosts rewrite): the parent's Sync card reflects
+                // enforcement without waiting on file I/O.
                 try
                 {
+                    await _syncEngine.NotifyEnforcementAppliedAsync(snapshot.RevisionId);
+
                     TryWriteText(Path.Combine(_stateDir, "enforcement-state.json"),
                         new JsonObject { ["revisionId"] = snapshot.RevisionId, ["appliedAtMs"] = NowMs() }.ToJsonString(JsonOpts));
 
                     ApplyContentFilterHosts(snapshot);
-                    await _syncEngine.NotifyEnforcementAppliedAsync(snapshot.RevisionId);
+                    LogPipelineLatency(snapshot);
                 }
                 catch (Exception ackEx)
                 {
@@ -965,6 +968,26 @@ var minutes = ms / 60_000L;
             {
                 _logger.LogWarning(ackEx, "Failed to report enforcement failure for {RevisionId}", snapshot.RevisionId);
             }
+        }
+    }
+
+    /// <summary>Logs the measured phone→laptop pipeline latency for the applied revision
+    /// (server-corrected now − the phone's server-stamped requestedAt).</summary>
+    private void LogPipelineLatency(ControlSnapshotV2 snapshot)
+    {
+        try
+        {
+            var latency = _syncEngine.PipelineLatencyMs;
+            if (latency is not null)
+            {
+                _logger.LogInformation(
+                    "Control revision {RevisionId} applied in {LatencyMs} ms (phone→laptop)",
+                    snapshot.RevisionId, latency);
+            }
+        }
+        catch
+        {
+            // diagnostics only
         }
     }
 

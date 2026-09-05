@@ -33,10 +33,17 @@ import com.guardpulse.parentcontrol.parent.notifyUnlockRequest
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import kotlinx.coroutines.flow.debounce
+import com.google.firebase.database.FirebaseDatabase
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        // Warm the RTDB socket so the first control write pays no reconnect.
+        FirebaseDatabase.getInstance().goOnline()
+    }
+
     private val syncViewModel: ParentSyncViewModel by viewModels()
     private lateinit var qrScanLauncher: ActivityResultLauncher<ScanOptions>
 
