@@ -1835,6 +1835,20 @@ var minutes = ms / 60_000L;
             var ttl = CommandTtl(type);
             if (createdAt <= 0 || _syncEngine.ServerNowMs() > createdAt + (long)ttl.TotalMilliseconds)
             {
+                // UNPAIR is the exception: an expired unpair still runs. Skipping it
+                // deadlocks re-pairing forever — meta.ownerUid stays attached while the
+                // phone already deleted the device, and the pair-request rule refuses
+                // new requests for owned devices (permission denied on every retry).
+                if (type == PolicyConstants.COMMAND_UNPAIR)
+                {
+                    _logger.LogWarning(
+                        "Processing EXPIRED unpair (created {AgeMin:N0} min ago): a skipped one deadlocks re-pairing",
+                        (_syncEngine.ServerNowMs() - createdAt) / 60_000);
+                    await ExecuteCommandAsync(type, packageName: null);
+                    await DeleteCommandAsync(commandId);
+                    continue;
+                }
+
                 lock (_dedupeGate)
                 {
                     _processedCommands.Add(commandId);

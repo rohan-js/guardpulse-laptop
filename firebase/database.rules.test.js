@@ -1124,3 +1124,18 @@ test("message text over 500 chars rejected", async () => {
     })
   );
 });
+
+test("current owner can re-pair own device without unpair command", async () => {
+  // meta.ownerUid already == parentUid (the missed-unpair deadlock):
+  // the same parent may create a fresh pair request for their own device.
+  await assertSucceeds(
+    dbAs("parentUid").ref("pairRequests/tv1/repair1").set({
+      parentUid: "parentUid",
+      secret: "re-secret",
+      code: "re-code",
+      status: "pending",
+      createdAt: 999,
+      expiresAt: 1999,
+    })
+  );
+});
