@@ -1844,8 +1844,20 @@ var minutes = ms / 60_000L;
                     _logger.LogWarning(
                         "Processing EXPIRED unpair (created {AgeMin:N0} min ago): a skipped one deadlocks re-pairing",
                         (_syncEngine.ServerNowMs() - createdAt) / 60_000);
+
+                    // CLAIM FIRST (pending -> running): the 5s poll would otherwise
+                    // re-run this unpair every cycle, wiping any pairing completed
+                    // in between (this exact wipe shipped in 0.2.29). Device rules
+                    // permit pending->running->done; DELETE is owner-only.
+                    await _firebase.PatchAsync(
+                        FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId,
+                        new JsonObject { ["status"] = "running" }.ToJsonString(JsonOpts), _ct);
+
                     await ExecuteCommandAsync(type, packageName: null);
-                    await DeleteCommandAsync(commandId);
+
+                    await _firebase.PatchAsync(
+                        FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId,
+                        new JsonObject { ["status"] = "done" }.ToJsonString(JsonOpts), _ct);
                     continue;
                 }
 
