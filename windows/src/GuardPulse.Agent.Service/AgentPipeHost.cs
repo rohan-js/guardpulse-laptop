@@ -76,6 +76,8 @@ internal sealed class AgentPipeHost : IDisposable
     /// </summary>
     public event Func<string, string?>? DeviceInfoRequest;
 
+    public event Func<string?>? TabRulesRequest;
+
     public int ConnectedAgents
     {
         get { lock (_gate) return _clients.Count(c => c.IsConnected); }
@@ -352,6 +354,28 @@ internal sealed class AgentPipeHost : IDisposable
                         TabClosedReceived?.Invoke(url);
                     }
 
+                    break;
+                }
+
+                case "tabRulesGet":
+                {
+                    var reqId = root.TryGetProperty("req", out var reqEl)
+                        && reqEl.ValueKind == JsonValueKind.String ? reqEl.GetString() : null;
+                    var handler = TabRulesRequest;
+                    var rulesJson = handler?.Invoke();
+                    if (string.IsNullOrEmpty(reqId) || string.IsNullOrEmpty(rulesJson))
+                    {
+                        break; // no rules or no correlation id: agent retries on next connect
+                    }
+
+                    client.Send(JsonSerializer.Serialize(
+                        new
+                        {
+                            t = "tabRules",
+                            req = reqId,
+                            payload = System.Text.Json.JsonDocument.Parse(rulesJson).RootElement.Clone(),
+                        },
+                        JsonOpts));
                     break;
                 }
 

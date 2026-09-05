@@ -69,6 +69,69 @@ public sealed class BrowserWatcher : IDisposable
     private long _browserFocusLostAtMs;
     private bool _graceSnapshotSent;
     private bool _disposed;
+    // Recently-seen browser top-level windows (most recent first). Enforcement walks
+    // all of them each scan so blocked tabs close even in background windows.
+    private readonly List<nint> _recentBrowserHwnds = new();
+    private const int MaxTrackedBrowserWindows = 6;
+
+    private delegate bool EnumWindowsProc(nint hwnd, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLength(nint hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(nint hwnd, StringBuilder text, int count);
+
+    /// <summary>Enumerates visible top-level windows belonging to known browser
+    /// processes (background windows included), newest-first by discovery order.</summary>
+    private List<nint> EnumerateBrowserWindows()
+    {
+        var result = new List<nint>();
+        try
+        {
+            var browserPids = new HashSet<int>();
+            foreach (var name in BrowserExes)
+            {
+                foreach (var proc in Process.GetProcessesByName(name))
+                {
+                    browserPids.Add(proc.Id);
+                    proc.Dispose();
+                }
+            }
+
+            if (browserPids.Count == 0) return result;
+
+            EnumWindows((hwnd, _) =>
+            {
+                try
+                {
+                    if (!IsWindowVisible(hwnd)) return true;
+                    GetWindowThreadProcessId(hwnd, out var pid);
+                    if (pid == 0 || !browserPids.Contains((int)pid)) return true;
+                    if (GetWindowTextLength(hwnd) == 0) return true;
+                    result.Add(hwnd);
+                }
+                catch
+                {
+                    // single-window failure must not abort enumeration
+                }
+
+                return true;
+            }, nint.Zero);
+        }
+        catch
+        {
+            // best-effort: foreground path still covers the active window
+        }
+
+        return result;
+    }
 
     public BrowserWatcher(PipeClient pipe, ForegroundHook hook)
     {
@@ -113,10 +176,15 @@ public sealed class BrowserWatcher : IDisposable
                     _lastBrowserExePath = scan.ExePath;
                     _browserFocusLostAtMs = 0;
                     _graceSnapshotSent = false;
+                    _recentBrowserHwnds.Remove(scan.BrowserHwnd);
+                    _recentBrowserHwnds.Insert(0, scan.BrowserHwnd);
+                    while (_recentBrowserHwnds.Count > MaxTrackedBrowserWindows)
+                    {
+                        _recentBrowserHwnds.RemoveAt(_recentBrowserHwnds.Count - 1);
+                    }
                 }
 
                 MaybeSend(snapshot);
-                EnforceTabRules(scan.BrowserHwnd, snapshot);
             }
             else
             {
@@ -151,6 +219,11 @@ public sealed class BrowserWatcher : IDisposable
                     }
                 }
             }
+
+            // Real-time enforcement must not depend on which app is foreground:
+            // walk EVERY tracked browser window (background included) and close
+            // any whose active URL matches the blocked-site rules.
+            EnforceTabRulesAcrossWindows();
         }
         catch (Exception)
         {
@@ -162,43 +235,88 @@ public sealed class BrowserWatcher : IDisposable
         }
     }
 
-    /// <summary>Real-time blocked-site enforcement: the active tab's URL matches the
-    /// rule set -> close THAT tab via UIA (no keystrokes, no focus change). One close
-    /// attempt per scan; the guard avoids repeat invocations while the URL persists.</summary>
-    private void EnforceTabRules(nint browserHwnd, BrowserSnapshot snapshot)
+    /// <summary>Real-time blocked-site enforcement across ALL tracked browser windows:
+    /// a window whose active URL matches the blocked-site rules has THAT tab closed via
+    /// UIA (no keystrokes, no focus change, background windows included). One close
+    /// attempt per URL per scan; the guard avoids repeat invocations while it persists.</summary>
+    private void EnforceTabRulesAcrossWindows()
     {
-        if (_tabRules.IsEmpty || browserHwnd == nint.Zero) return;
-        var url = snapshot.ActiveUrl;
-        var match = _tabRules.Match(url);
-        if (match is null)
+        if (_tabRules.IsEmpty) return;
+
+        List<nint> windows;
+        lock (_stateGate)
         {
+            windows = _recentBrowserHwnds.Where(IsWindowVisible).ToList();
+        }
+
+        // Fall back to a fresh enumeration when nothing is tracked yet (service
+        // restart, first launch after install) so enforcement starts immediately.
+        if (windows.Count == 0)
+        {
+            windows = EnumerateBrowserWindows();
+            lock (_stateGate)
+            {
+                foreach (var hwnd in windows)
+                {
+                    if (!_recentBrowserHwnds.Contains(hwnd))
+                    {
+                        _recentBrowserHwnds.Insert(0, hwnd);
+                    }
+                }
+
+                while (_recentBrowserHwnds.Count > MaxTrackedBrowserWindows)
+                {
+                    _recentBrowserHwnds.RemoveAt(_recentBrowserHwnds.Count - 1);
+                }
+            }
+        }
+
+        if (windows.Count == 0) return;
+
+        foreach (var hwnd in windows)
+        {
+            var exePath = ForegroundHook.GetProcessImagePath(WindowProcessId(hwnd));
+            if (exePath is null) continue;
+            var snapshot = CaptureBrowserWindow(hwnd, exePath);
+            var url = snapshot?.ActiveUrl ?? UrlFromTitle(ForegroundHook.GetWindowTitle(hwnd));
+            if (string.IsNullOrWhiteSpace(url)) continue;
+
+            var match = _tabRules.Match(url);
+            if (match is null) continue;
             if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
             {
-                _lastClosedUrl = null; // navigated away from the blocked page
+                continue; // close already attempted for this exact URL this cycle
             }
 
-            return;
-        }
-
-        if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
-        {
-            return; // close already attempted for this exact URL this scan cycle
-        }
-
-        _lastClosedUrl = url;
-        var dispatcher = _dispatcher;
-        _ = Task.Run(() =>
-        {
-            try
+            _lastClosedUrl = url;
+            var capturedUrl = url;
+            _ = Task.Run(() =>
             {
-                if (!TabEnforcer.CloseSelectedTab(browserHwnd)) return;
-                _pipe.SendTabClosed(url);
-            }
-            catch
-            {
-                // window/tab vanished mid-close; the next scan re-evaluates
-            }
-        });
+                try
+                {
+                    if (!TabEnforcer.CloseSelectedTab(hwnd)) return;
+                    _pipe.SendTabClosed(capturedUrl);
+                }
+                catch
+                {
+                    // window/tab vanished mid-close; the next scan re-evaluates
+                }
+            });
+        }
+    }
+
+    /// <summary>Best-effort URL from a window title ("Site - Browser" → "site").</summary>
+    private static string? UrlFromTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var dash = title.LastIndexOf(" - ", StringComparison.Ordinal);
+        return dash > 0 ? title[..dash].Trim() : title.Trim();
+    }
+
+    private static uint WindowProcessId(nint hwnd)
+    {
+        GetWindowThreadProcessId(hwnd, out var pid);
+        return pid;
     }
 
     private ScanResult CaptureForeground()

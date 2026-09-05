@@ -556,6 +556,18 @@ public sealed partial class AgentHostedService(
         _pipeHost.AdminStateReceived += (session, isAdmin) => RunSafe("admin-state", () => OnAdminStateReceived(session, isAdmin));
         // Setup window pairing credentials: served from the secret store (PairingManager),
         // NOT device.json — device.json is child-readable and must not carry the secret.
+        _pipeHost.TabRulesRequest += () =>
+        {
+            try
+            {
+                var path = Path.Combine(_stateDir, "block-rules.json");
+                return File.Exists(path) ? File.ReadAllText(path) : null;
+            }
+            catch
+            {
+                return null;
+            }
+        };
         _pipeHost.DeviceInfoRequest += req =>
         {
             try
@@ -924,15 +936,18 @@ var minutes = ms / 60_000L;
         {
             _logger.LogInformation("Applying control revision {RevisionId}", snapshot.RevisionId);
 
-            // ENFORCEMENT FIRST: the suspend/wall lands before ANY disk write. A slow
-            // disk or AV scan on policy-cache.json used to gate every lock here.
+            // ENFORCEMENT FIRST: app locks AND site blocking land before ANY disk
+            // write or network ack. ApplyContentFilterHosts here means hosts + registry
+            // + tab-rules broadcast complete within this handler (~100ms), instead of
+            // "eventually" behind the ack — that ordering was the "not real time" gap.
             EvaluateCurrentForeground();
+            ApplyContentFilterHosts(snapshot);
             _ = Task.Run(() => WritePolicyCache(snapshot));
 
             _ = Task.Run(async () =>
             {
-                // Ack FIRST (before the hosts rewrite): the parent's Sync card reflects
-                // enforcement without waiting on file I/O.
+                // Ack after enforcement: the parent's Sync card reflects that the
+                // block is actually on the machine when it flips to APPLIED.
                 try
                 {
                     await _syncEngine.NotifyEnforcementAppliedAsync(snapshot.RevisionId);
@@ -940,7 +955,6 @@ var minutes = ms / 60_000L;
                     TryWriteText(Path.Combine(_stateDir, "enforcement-state.json"),
                         new JsonObject { ["revisionId"] = snapshot.RevisionId, ["appliedAtMs"] = NowMs() }.ToJsonString(JsonOpts));
 
-                    ApplyContentFilterHosts(snapshot);
                     LogPipelineLatency(snapshot);
                 }
                 catch (Exception ackEx)

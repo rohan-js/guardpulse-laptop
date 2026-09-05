@@ -48,6 +48,10 @@ public partial class App : Application
         _pipe = new PipeClient();
         _pipe.MessageReceived += OnPipeMessage;
         _pipe.Connected += ReportAdminState;
+        // After every (re)connect, ask for the current blocked-site rules — without
+        // this a restarted session agent runs with empty rules until the next
+        // control apply on the service side.
+        _pipe.Connected += () => _ = RequestTabRulesAsync();
         // Connected fires on the pipe's receive thread; the set is UI-thread state.
         _pipe.Connected += () => Dispatcher.BeginInvoke(() => _knownLockedApps.Clear());
         _pipe.Start();
@@ -276,6 +280,44 @@ public partial class App : Application
             }
         });
     }
+    /// <summary>Asks the service for the current blocked-site rules (on pipe
+    /// connect) and applies them; keeps tab enforcement warm across restarts.</summary>
+    private async Task RequestTabRulesAsync()
+    {
+        try
+        {
+            var reply = await _pipe.SendRequestAsync("tabRulesGet", new { }, TimeSpan.FromSeconds(4));
+            if (reply is not System.Text.Json.JsonElement wrapped
+                || !wrapped.TryGetProperty("payload", out var payload)) return;
+            var domains = new List<string>();
+            var paths = new List<string>();
+            if (payload.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                if (payload.TryGetProperty("domains", out var td) && td.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var item in td.EnumerateArray())
+                    {
+                        if (item.GetString() is { Length: > 0 } dm) domains.Add(dm);
+                    }
+                }
+
+                if (payload.TryGetProperty("paths", out var tp) && tp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var item in tp.EnumerateArray())
+                    {
+                        if (item.GetString() is { Length: > 0 } pp) paths.Add(pp);
+                    }
+                }
+            }
+
+            Dispatcher.Invoke(() => _browserWatcher?.SetTabRules(new TabRules { Domains = domains, Paths = paths }));
+        }
+        catch
+        {
+            // service busy/unavailable; the next control apply re-broadcasts anyway
+        }
+    }
+
 
     /// <summary>
     /// Reports whether this logon account is an administrator; the service warns the parent
