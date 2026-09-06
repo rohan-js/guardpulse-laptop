@@ -78,6 +78,10 @@ public sealed class PairingManager
     /// immediately-previous generation AND the pair request was created within the
     /// pairing TTL (10 minutes). Mirrors TV isValid, plus the rotation-boundary
     /// grace described on the prev* keys.
+    /// Read-only against the store for VALIDATION: GetOrCreate's Current getter
+    /// auto-rotates stale credentials — fine while showing the QR, but a Validate
+    /// call must never rotate, or it would wipe the one-deep grace it is about to
+    /// consult and reject QRs scanned just before a rotation boundary.
     /// </summary>
     public bool Validate(string? secret, string? code, long createdAtMs, long nowMs)
     {
@@ -86,10 +90,18 @@ public sealed class PairingManager
             return false;
         }
 
-        var current = Current; // rotates stale credentials, so an old secret stops matching
+        // Non-rotating read of the current generation.
+        string? curSecret;
+        string? curCode;
+        lock (_gate)
+        {
+            curSecret = _secrets.Get(SecretKey);
+            curCode = _secrets.Get(CodeKey);
+        }
+
         var currentMatch =
-            (!string.IsNullOrWhiteSpace(secret) && secret == current.Secret)
-            || (!string.IsNullOrWhiteSpace(code) && code == current.ManualCode);
+            (!string.IsNullOrWhiteSpace(secret) && !string.IsNullOrWhiteSpace(curSecret) && secret == curSecret)
+            || (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(curCode) && code == curCode);
         if (currentMatch)
         {
             return true;

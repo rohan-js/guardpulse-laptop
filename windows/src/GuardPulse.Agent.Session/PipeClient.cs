@@ -23,12 +23,24 @@ public sealed class PipeClient : IDisposable
     private readonly CancellationTokenSource _cts = new();
     // Bounded with DropOldest: if the writer stalls, old messages are dropped in
     // favor of new ones instead of growing the queue without limit.
-    private readonly Channel<string> _outbound = Channel.CreateBounded<string>(
+    // The envelope timestamp travels out-of-band (never on the wire) so the
+    // CONTRACTS.md shapes stay exact; the reconnect filter uses it to drop only
+    // stale telemetry.
+    private sealed record QueuedMessage(string Json, string? T, long EnqueuedMs);
+
+    private readonly Channel<QueuedMessage> _outbound = Channel.CreateBounded<QueuedMessage>(
         new BoundedChannelOptions(4096)
         {
             SingleReader = true,
             FullMode = BoundedChannelFullMode.DropOldest,
         });
+
+    // Latest lock/unlock verdict, coalesced before dispatch: a pending "lock"
+    // superseded by "unlock" must not flash the wall (and vice versa). The
+    // raw JSON of the newest verdict is held here; older ones are dropped.
+    private readonly object _verdictGate = new();
+    private string? _pendingVerdictType;
+    private JsonElement? _pendingVerdict;
     private Task? _receiveLoop;
     private Task? _writerLoop;
     private NamedPipeClientStream? _stream;
@@ -56,10 +68,10 @@ public sealed class PipeClient : IDisposable
         var reader = _outbound.Reader;
         while (!ct.IsCancellationRequested)
         {
-            string json;
+            QueuedMessage queued;
             try
             {
-                json = await reader.ReadAsync(ct);
+                queued = await reader.ReadAsync(ct);
             }
             catch (OperationCanceledException)
             {
@@ -70,12 +82,12 @@ public sealed class PipeClient : IDisposable
             {
                 try
                 {
-                    _writer?.WriteLine(json);
+                    _writer?.WriteLine(queued.Json);
                 }
                 catch (Exception)
                 {
-                    // write failed (pipe down / disposing); the reconnect drain in
-                    // RunAsync clears this stale backlog, so it is not re-queued here
+                    // write failed (pipe down / disposing); the reconnect filter in
+                    // RunAsync retains/drops this backlog, so it is not re-queued here
                 }
             }
         }
@@ -91,14 +103,28 @@ public sealed class PipeClient : IDisposable
                     ".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
                 await _stream.ConnectAsync(15_000, ct);
 
-                // Reconnect: do NOT replay the pre-restart backlog. Everything queued
-                // while disconnected describes a service/world state that no longer
-                // exists (stale foreground/browser/pin snapshots); drain it so the
-                // fresh service session is not fed old state. The hello below plus a
-                // forced fresh foreground report re-establish current state.
+                // Reconnect: retain pin/askParent control messages across the
+                // reconnect (the user already typed the PIN / asked the parent —
+                // dropping them would swallow the action), but drop only stale
+                // foreground/browser telemetry older than 10s: it describes a
+                // service/world state that no longer exists. The age travels in
+                // the out-of-band queue envelope, never on the wire.
                 lock (_sendLock)
                 {
-                    while (_outbound.Reader.TryRead(out _)) { }
+                    var kept = new List<QueuedMessage>();
+                    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    while (_outbound.Reader.TryRead(out var queued))
+                    {
+                        var retainable = queued.T is "pin" or "askParent";
+                        var staleTelemetry = queued.T is "foreground" or "browser" or "tabClosed"
+                            && nowMs - queued.EnqueuedMs > 10_000;
+                        if (retainable || !staleTelemetry)
+                        {
+                            kept.Add(queued);
+                        }
+                    }
+
+                    foreach (var item in kept) _outbound.Writer.TryWrite(item);
                 }
 
                 _writer = new StreamWriter(_stream, new UTF8Encoding(false))
@@ -147,6 +173,64 @@ public sealed class PipeClient : IDisposable
 
                         continue;
                     }
+
+                    // Coalesce lock/unlock to the latest state before dispatch: a
+                    // pending "lock" superseded by "unlock" must not flash the
+                    // wall, so hold verdicts briefly and deliver only the newest.
+                    if (element.ValueKind == JsonValueKind.Object &&
+                        element.TryGetProperty("t", out var typeEl) &&
+                        typeEl.GetString() is "lock" or "unlock")
+                    {
+                        var verdict = typeEl.GetString();
+                        bool deliverNow;
+                        JsonElement? toDeliver = null;
+                        lock (_verdictGate)
+                        {
+                            if (_pendingVerdictType is null)
+                            {
+                                _pendingVerdictType = verdict;
+                                _pendingVerdict = element;
+                                deliverNow = false;
+                            }
+                            else if (_pendingVerdictType == verdict)
+                            {
+                                _pendingVerdict = element;
+                                deliverNow = false;
+                            }
+                            else
+                            {
+                                // Newest verdict supersedes the held one entirely.
+                                _pendingVerdictType = null;
+                                _pendingVerdict = null;
+                                toDeliver = element;
+                                deliverNow = true;
+                            }
+                        }
+
+                        if (!deliverNow)
+                        {
+                            _ = Task.Delay(50, ct).ContinueWith(_ =>
+                            {
+                                JsonElement? held = null;
+                                lock (_verdictGate)
+                                {
+                                    if (_pendingVerdictType == verdict && _pendingVerdict is { } h)
+                                    {
+                                        held = h;
+                                        _pendingVerdictType = null;
+                                        _pendingVerdict = null;
+                                    }
+                                }
+
+                                if (held is { } heldEl) DispatchOnUiThread(heldEl);
+                            }, TaskScheduler.Default);
+                            continue;
+                        }
+
+                        DispatchOnUiThread(toDeliver!.Value);
+                        continue;
+                    }
+
                     DispatchOnUiThread(element);
                 }
             }
@@ -218,6 +302,15 @@ public sealed class PipeClient : IDisposable
         Send(new { t = "foreground", appKey, exePath, windowTitle });
     }
 
+    /// <summary>Bypasses the foreground dedupe once so the service re-evaluates
+    /// instantly on pipe (re)connect (Connected handler calls this — the hello
+    /// alone does not carry the current foreground app).</summary>
+    public void ForcePublishForeground()
+    {
+        _lastForegroundAppKey = null;
+        _lastForegroundSentAt = 0;
+    }
+
     /// <summary>Live browser tab state from <see cref="BrowserWatcher"/>; shape fixed by CONTRACTS.md.</summary>
     internal void SendBrowser(BrowserSnapshot snapshot)
     {
@@ -283,14 +376,27 @@ public sealed class PipeClient : IDisposable
     private void SendRaw(string json)
     {
         // Never block callers on the pipe; the writer task drains the channel.
-        _outbound.Writer.TryWrite(json);
+        _outbound.Writer.TryWrite(new QueuedMessage(json, MessageTypeOf(json), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
     }
 
     private void Send(object message)
     {
         var json = JsonSerializer.Serialize(message);
         // Never block callers on the pipe; the writer task drains the channel.
-        _outbound.Writer.TryWrite(json);
+        _outbound.Writer.TryWrite(new QueuedMessage(json, MessageTypeOf(json), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+    }
+
+    private static string? MessageTypeOf(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("t", out var t) ? t.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public void Dispose()

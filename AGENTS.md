@@ -72,17 +72,29 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ---
 
-## 6. CURRENT STATE (as of 2026-09-04 — 0.2.15)
+## 6. CURRENT STATE (as of 2026-09-06 — 0.2.32)
 
-* Head: **0.2.30** — pairing made permanent. PairingManager keeps a one-deep
-  rotation grace (validate matches current OR immediately-previous secret/code
-  within TTL — kills the rotation-boundary rejection loop); credential-mismatch
-  on an unowned device now responds "expired" (retryable) instead of "rejected"
-  (terminal). All shipped defaults reverted to the LIVE US database; Singapore
-  URL kept only in `firebase/cutover-singapore.properties` staging until the new
-  instance exists. Rules deployed to guardpulse-laptop-control (pairRequests
-  owner re-pair + messages node).
+* Head: **f146dfb** — Phone APK 0.2.31 (US instance). Prior **4b56257** (0.2.31) —
+  site blocking made genuinely real-time (sync content-filter apply before ack,
+  all-window UIA tab enforcement incl. background windows, tab-rules rebroadcast
+  on session restart). Prior **db8faa6** (0.2.30) — pairing made permanent
+  (one-deep rotation grace, mismatch=expired-retryable, owner re-pair rule);
+  UIA tab blocking; extension machinery removed; all shipped defaults on the
+  live US database `guardpulse-laptop-control`
+  (`https://guardpulse-laptop-control-default-rtdb.firebaseio.com`).
+  Pipeline speedups shipped (ControlDebounce 250ms to 20ms, RAM-first fast path,
+  warm TCP keep-alive, optimistic parent UI). Sticky session lock + real-time
+  parent messages shipped in 0.2.25. This round (uncommitted): rules ownership-transfer
+  gating + legacy policy strictness parity (41/41 green, NOT deployed — deploy
+  left to main agent), parent client hardening (pending-diff, unlock/safe-mode
+  validation, multi-pairing, message UX), installer polling + version single-source.
+* Rules deploy state: owner re-pair + messages node live per **db8faa6**/**f4acb4e**
+  commit messages ("Deployed live"). The new transfer-gating rule in this working
+  tree is NOT yet deployed.
 * Paired device: `129b2e39670b44ebadb305a7bd91b6b9` (this machine, DESKTOP-4ILVI11). Legacy ids `52053ba0…`/`4f2dde5e…` are orphans.
+* Installer output: `windows/installer/Output/DeviceServiceSetup-0.2.32.exe`
+  (version single-sourced from `gradle.properties` via ISCC `/DAppVersion`).
+* Phone APK: `release-apk/LAPTOP-PARENT-0.2.31-release.apk`.
 * Windows tests green: 133 Protocol + 93 Core (226 total).
 * Firebase rules deployed live to `guardpulse-laptop-control` (unchanged by 0.2.14 — no new keys).
 

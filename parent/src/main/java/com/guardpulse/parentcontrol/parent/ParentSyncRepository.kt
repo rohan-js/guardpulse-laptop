@@ -61,6 +61,10 @@ class ParentSyncRepository(private val database: DatabaseReference) {
     private var deviceRegistration: Registration? = null
     private var connectionRegistration: Registration? = null
     private var pairingRegistration: Registration? = null
+    private val pairingRegistrations = mutableMapOf<String, Registration>()
+    private val pairingExpiryMs = mutableMapOf<String, Long?>()
+    private val pairingCallbacks = mutableMapOf<String, (PairRequestState?) -> Unit>()
+    private val pairingErrorCallbacks = mutableMapOf<String, (String) -> Unit>()
     private var currentUid: String? = null
     private var currentDeviceId: String? = null
     private var currentDevicesCallback: ((List<ParentDevice>) -> Unit)? = null
@@ -110,29 +114,61 @@ class ParentSyncRepository(private val database: DatabaseReference) {
         onValue: (PairRequestState?) -> Unit,
         onError: (String) -> Unit
     ) {
-        pairingRegistration?.remove()
-        pairingRegistration = register(
+        val key = "$deviceId/$requestId"
+        pairingRegistrations[key]?.remove()
+        pairingCallbacks[key] = onValue
+        pairingErrorCallbacks[key] = onError
+        pairingRegistrations[key] = register(
             database.child(FirebasePaths.pairRequest(deviceId, requestId)),
             keepSynced = false,
             onError = onError
         ) { snapshot ->
-            onValue(
-                if (!snapshot.exists()) null else PairRequestState(
-                    deviceId = deviceId,
-                    requestId = requestId,
-                    status = snapshot.child("status").getValue(String::class.java)
-                        ?: PolicyConstants.COMMAND_PENDING,
-                    createdAt = snapshot.child("createdAt").getValue(Long::class.java),
-                    expiresAt = snapshot.child("expiresAt").getValue(Long::class.java),
-                    error = snapshot.child("error").getValue(String::class.java)
-                )
+            val state = if (!snapshot.exists()) null else PairRequestState(
+                deviceId = deviceId,
+                requestId = requestId,
+                status = snapshot.child("status").getValue(String::class.java)
+                    ?: PolicyConstants.COMMAND_PENDING,
+                createdAt = snapshot.child("createdAt").getValue(Long::class.java),
+                expiresAt = snapshot.child("expiresAt").getValue(Long::class.java),
+                error = snapshot.child("error").getValue(String::class.java)
             )
+            pairingExpiryMs[key] = state?.expiresAt
+            onValue(state)
         }
+        // Legacy single-slot observer kept in sync: the most recent registration
+        // also drives pairingRegistration so clearPairRequestObserver() still works.
+        pairingRegistration?.remove()
+        pairingRegistration = pairingRegistrations[key]
     }
 
     fun clearPairRequestObserver() {
         pairingRegistration?.remove()
         pairingRegistration = null
+    }
+
+    fun clearPairRequestObserver(deviceId: String, requestId: String) {
+        val key = "$deviceId/$requestId"
+        pairingRegistrations.remove(key)?.remove()
+        pairingExpiryMs.remove(key)
+        pairingCallbacks.remove(key)
+        pairingErrorCallbacks.remove(key)
+        if (pairingRegistrations.isEmpty()) pairingRegistration = null
+    }
+
+    /** Delete pair requests that expired over 10 minutes ago, then drop their observers. */
+    fun expirePairRequests(deviceId: String, now: Long = System.currentTimeMillis()) {
+        val stale = pairingExpiryMs.filter { (key, expiresAt) ->
+            key.startsWith("$deviceId/") && expiresAt != null && now - expiresAt > PolicyConstants.PAIRING_TTL_MS
+        }.keys.toList()
+        stale.forEach { key ->
+            val requestId = key.substringAfter("/")
+            database.child(FirebasePaths.pairRequest(deviceId, requestId)).removeValue()
+            pairingRegistrations.remove(key)?.remove()
+            pairingExpiryMs.remove(key)
+            pairingCallbacks.remove(key)
+            pairingErrorCallbacks.remove(key)
+        }
+        if (pairingRegistrations.isEmpty()) pairingRegistration = null
     }
 
     fun close() {

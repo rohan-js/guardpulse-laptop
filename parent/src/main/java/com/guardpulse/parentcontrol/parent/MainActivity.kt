@@ -207,7 +207,7 @@ private fun ParentDashboard(
     onSignOut: () -> Unit,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
-    onSendMessage: (String, String) -> Unit,
+    onSendMessage: (String, String, () -> Unit, (String) -> Unit) -> Unit,
     onPair: (String, String, String) -> Unit,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onSetPin: (String) -> Unit,

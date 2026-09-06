@@ -29,6 +29,10 @@ public partial class App : Application
     private readonly DispatcherTimer _serviceWatch = new() { Interval = TimeSpan.FromSeconds(1) };
     private long _pipeDeadSinceTicks;
     private bool _fallbackLockVisible;
+    // Named Connected/pipe handlers so OnExit can unsubscribe them (Connected
+    // handlers otherwise keep App alive via the pipe's event after teardown).
+    private Action? _onPipeConnectedAdmin;
+    private Action? _onPipeConnectedTabRules;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -42,18 +46,35 @@ public partial class App : Application
         base.OnStartup(e);
 
         var initCache = PolicyCache.Load();
-        foreach (var b in initCache.BlockedApps) _knownLockedApps.Add(b);
-        foreach (var d in initCache.DailyBlockedApps) _knownLockedApps.Add(d);
+        if (initCache is not null)
+        {
+            foreach (var b in initCache.BlockedApps) _knownLockedApps.Add(b);
+            foreach (var d in initCache.DailyBlockedApps) _knownLockedApps.Add(d);
+            foreach (var s in initCache.SessionBlockedApps) _knownLockedApps.Add(s);
+            foreach (var b in PolicyCache.BypassAppKeys) _knownLockedApps.Add(b);
+        }
+        else
+        {
+            // Unknown policy state (service never wrote a cache): seed only the
+            // bypass tools (fail closed), never an empty allow-everything set.
+            foreach (var b in PolicyCache.BypassAppKeys) _knownLockedApps.Add(b);
+        }
 
         _pipe = new PipeClient();
         _pipe.MessageReceived += OnPipeMessage;
-        _pipe.Connected += ReportAdminState;
+        _onPipeConnectedAdmin = ReportAdminState;
+        _onPipeConnectedTabRules = () => _ = RequestTabRulesAsync();
+        _pipe.Connected += _onPipeConnectedAdmin;
         // After every (re)connect, ask for the current blocked-site rules — without
         // this a restarted session agent runs with empty rules until the next
         // control apply on the service side.
-        _pipe.Connected += () => _ = RequestTabRulesAsync();
-        // Connected fires on the pipe's receive thread; the set is UI-thread state.
-        _pipe.Connected += () => Dispatcher.BeginInvoke(() => _knownLockedApps.Clear());
+        _pipe.Connected += _onPipeConnectedTabRules;
+        // Keep the locked-app set across reconnects: it lifts ONLY on an
+        // explicit service "unlock" message, never on transport churn. (The
+        // service re-broadcasts the current decision on hello, so a stale entry
+        // is corrected by the next lock/unlock, not by clearing here.)
+        // On Connected the ForegroundHook also forces one fresh foreground
+        // Publish (bypassing its dedupe) so the service re-evaluates instantly.
         _pipe.Start();
 
         _hook = new ForegroundHook(_pipe);
@@ -63,10 +84,33 @@ public partial class App : Application
         _hook.ForegroundChanged += appKey =>
         {
             if (appKey == "__agent__") return;
+            // Desktop-suppression for re-assert loops: while the service holds a
+            // lock verdict, shell minimize gestures momentarily bring the blocked
+            // app forward; suppressing local re-locks briefly avoids wall flicker
+            // while the service state (the sole unlock authority) settles.
             if (Environment.TickCount64 < _suppressLockUntilTick) return;
 
-            var cache = PolicyCache.Load();
-            var blockedReason = cache.BlockedReasonFor(appKey);
+            // While the pipe is up the service owns lock verdicts: the wall
+            // follows the service's lock/unlock messages via _knownLockedApps
+            // (the sole unlock authority). The offline policy cache drives the
+            // wall only while the pipe is dead (fail closed).
+            var serviceOwnsVerdict = _pipe?.IsConnected == true;
+            string? blockedReason;
+            if (serviceOwnsVerdict)
+            {
+                blockedReason = _knownLockedApps.Contains(appKey)
+                    || _knownLockedApps.Contains(System.IO.Path.GetFileName(appKey))
+                    ? "manual" : null;
+            }
+            else
+            {
+                var cache = PolicyCache.Load();
+                // Null cache = UNKNOWN policy state (service never wrote one):
+                // bypass tools stay locked (fail closed), everything else waits
+                // for the service instead of guessing from an empty list.
+                blockedReason = cache?.BlockedReasonFor(appKey) ?? PolicyCache.UnknownReasonFor(appKey);
+            }
+
             var isBlocked = blockedReason != null;
             if (isBlocked)
             {
@@ -118,11 +162,12 @@ public partial class App : Application
             }
             else if (_lockWindow is { IsVisible: true } && appKey != _lockWindow.CurrentAppKey)
             {
-                // The wall hides ONLY via its own PIN success / service unlock paths.
-                // An allowed app in front never lifts it: the locked app may still be
-                // suspended behind this window, so switch to a full-desktop hold that
-                // stops naming the dead foreground app (keeps CoverVirtualDesktop
-                // refreshed for the whole virtual desktop).
+                // App switch while the wall is up: NEVER lift/hide/resume here.
+                // The wall lifts ONLY on an explicit service "unlock" pipe
+                // message. An allowed app in front just switches the wall to a
+                // full-desktop hold (keeps CoverVirtualDesktop refreshed for the
+                // whole virtual desktop); Minimizing the blocked app is still
+                // fine because it does not touch the wall itself.
                 var lockedKey = _lockWindow.CurrentAppKey;
                 var lockedAppSuspended = _knownLockedApps.Contains(lockedKey)
                     || (!string.IsNullOrEmpty(lockedKey) && _knownLockedApps.Contains(System.IO.Path.GetFileName(lockedKey)));
@@ -141,8 +186,9 @@ public partial class App : Application
                         }
                         else
                         {
-                            _lockWindow.MinimizeBlockedApp(lockedKey);
-                            _lockWindow.HideLock();
+                            // Previously-named app is no longer service-locked:
+                            // stop naming it, but do NOT hide — only "unlock" hides.
+                            _lockWindow.HoldDesktop();
                         }
                     });
                 }
@@ -198,11 +244,27 @@ public partial class App : Application
         if (_lockWindow == null)
         {
             _lockWindow = new LockWindow(_pipe!);
-            _lockWindow.DesktopMinimized += () => _suppressLockUntilTick = Environment.TickCount64 + 600;
+            _lockWindow.DesktopMinimized += OnWallDesktopMinimized;
             _lockWindow.UpdatePinState(_pinConfigured, _pinBlockedUntilMs);
         }
 
         return _lockWindow;
+    }
+
+    private void OnWallDesktopMinimized()
+    {
+        // 60s desktop-suppression for re-assert loops, based on service state:
+        // only suppress while the service still holds this app locked (known
+        // verdict); an unlocked app must re-lock immediately on next signal.
+        var key = _lockWindow?.CurrentAppKey;
+        if (!string.IsNullOrEmpty(key) && _knownLockedApps.Contains(key))
+        {
+            _suppressLockUntilTick = Environment.TickCount64 + 60_000;
+        }
+        else
+        {
+            _suppressLockUntilTick = Environment.TickCount64 + 600;
+        }
     }
 
     private void OnPipeMessage(System.Text.Json.JsonElement message)
@@ -226,6 +288,7 @@ public partial class App : Application
                     {
                         _knownLockedApps.Remove(unlockedKey);
                         _lockWindow?.RestoreMinimized(unlockedKey);
+                        _lockWindow?.ClearMinimized();
                     }
                     break;
                 case "pinState":
@@ -398,7 +461,7 @@ public partial class App : Application
         }
 
         var cache = PolicyCache.Load();
-        var reason = cache.BlockedReasonFor(appKey);
+        var reason = cache?.BlockedReasonFor(appKey) ?? PolicyCache.UnknownReasonFor(appKey);
         if (reason is null)
         {
             // Foreground moved to an allowed app while offline: only ever lift a
@@ -430,10 +493,20 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _serviceWatch.Stop();
+        if (_pipe is not null)
+        {
+            _pipe.MessageReceived -= OnPipeMessage;
+            if (_onPipeConnectedAdmin is not null) _pipe.Connected -= _onPipeConnectedAdmin;
+            if (_onPipeConnectedTabRules is not null) _pipe.Connected -= _onPipeConnectedTabRules;
+        }
+
         _pipe?.SendSetupClosed();
+        _lockWindow?.Teardown();
         _browserWatcher?.Dispose();
         _hook?.Dispose();
         _pipe?.Dispose();
+        _tray?.Dispose();
         try
         {
             // The second-instance path exits without owning the mutex; releasing

@@ -1,6 +1,7 @@
-﻿namespace GuardPulse.Agent.Session;
+namespace GuardPulse.Agent.Session;
 
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -8,14 +9,24 @@ using System.Windows.Threading;
 public partial class ToastWindow : Window
 {
     private static ToastWindow? _instance;
+    // FIFO toast queue: ShowToast enqueues (cap 3, oldest dropped beyond it) and
+    // each toast shows its FULL duration in turn instead of overwriting the
+    // singleton text mid-display.
+    private static readonly Queue<(string Title, string Message, int Seconds)> _queue = new();
+    private static bool _showing;
     private readonly DispatcherTimer _hideTimer = new();
+    private string _currentTitle = "";
+    private string _currentMessage = "";
+    private bool _dismissing;
 
     public ToastWindow()
     {
         InitializeComponent();
+        // Renders above the lock wall: Owner=null top-level window with Topmost,
+        // so the compositor keeps it over the full-desktop overlay.
+        Owner = null;
         Topmost = true;
-        _hideTimer.Interval = TimeSpan.FromSeconds(6);
-        _hideTimer.Tick += (_, _) => Dismiss();
+        _hideTimer.Tick += (_, _) => Next();
     }
 
     public static void ShowToast(string title, string message, int displaySeconds = 6)
@@ -27,16 +38,44 @@ public partial class ToastWindow : Window
                 _instance = new ToastWindow();
             }
 
-            _instance.Display(title, message, displaySeconds);
+            var seconds = Math.Clamp(displaySeconds, 3, 60);
+            lock (_queue)
+            {
+                while (_queue.Count >= 3) _queue.Dequeue();
+                _queue.Enqueue((title, message, seconds));
+            }
+
+            if (!_showing) _instance.Next();
         });
+    }
+
+    private void Next()
+    {
+        _hideTimer.Stop();
+        (string Title, string Message, int Seconds) next;
+        lock (_queue)
+        {
+            if (_queue.Count == 0)
+            {
+                _showing = false;
+                if (IsVisible) Dismiss();
+                return;
+            }
+
+            next = _queue.Dequeue();
+        }
+
+        _showing = true;
+        Display(next.Title, next.Message, next.Seconds);
     }
 
     private void Display(string title, string message, int displaySeconds)
     {
-        _hideTimer.Stop();
+        _currentTitle = title;
+        _currentMessage = message;
         ToastTitle.Text = title;
         ToastMessage.Text = message;
-        _hideTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(displaySeconds, 3, 60));
+        _hideTimer.Interval = TimeSpan.FromSeconds(displaySeconds);
 
         // Position at bottom-right of primary work area
         Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -44,9 +83,11 @@ public partial class ToastWindow : Window
         Left = workArea.Right - DesiredSize.Width - 16;
         Top = workArea.Bottom - DesiredSize.Height - 16;
 
-        Show();
+        if (!IsVisible) Show();
 
         // Fade in
+        Topmost = false;
+        Topmost = true;
         var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(250));
         BeginAnimation(OpacityProperty, fadeIn);
 
@@ -56,8 +97,14 @@ public partial class ToastWindow : Window
     private void Dismiss()
     {
         _hideTimer.Stop();
+        if (!IsVisible || _dismissing) return;
+        _dismissing = true;
         var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(300));
-        fadeOut.Completed += (_, _) => Hide();
+        fadeOut.Completed += (_, _) =>
+        {
+            _dismissing = false;
+            Hide();
+        };
         BeginAnimation(OpacityProperty, fadeOut);
     }
 }

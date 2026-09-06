@@ -13,8 +13,34 @@ using System.Text.Json;
 /// </summary>
 public sealed class TabRules
 {
-    public IReadOnlyList<string> Domains { get; init; } = new List<string>();
-    public IReadOnlyList<string> Paths { get; init; } = new List<string>();
+    private IReadOnlyList<string> _domains = new List<string>();
+    private IReadOnlyList<string> _paths = new List<string>();
+
+    // Normalized to lowercase on set so Domains comparison is case-insensitive
+    // no matter which ingestion path built the set (Parse, pipe push, hello).
+    public IReadOnlyList<string> Domains
+    {
+        get => _domains;
+        init => _domains = NormalizeAll(value);
+    }
+
+    public IReadOnlyList<string> Paths
+    {
+        get => _paths;
+        init => _paths = NormalizeAll(value);
+    }
+
+    private static IReadOnlyList<string> NormalizeAll(IReadOnlyList<string>? values)
+    {
+        if (values is null) return new List<string>();
+        var normalized = new List<string>(values.Count);
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrEmpty(v)) normalized.Add(v.ToLowerInvariant());
+        }
+
+        return normalized;
+    }
 
     public static TabRules Parse(string json)
     {
@@ -28,7 +54,9 @@ public sealed class TabRules
             {
                 foreach (var item in d.EnumerateArray())
                 {
-                    if (item.GetString() is { Length: > 0 } host) domains.Add(host);
+                    // Normalized to lowercase at parse so Domains comparison is
+                    // case-insensitive (OrdinalIgnoreCase at match time too).
+                    if (item.GetString() is { Length: > 0 } host) domains.Add(host.ToLowerInvariant());
                 }
             }
 
@@ -36,7 +64,7 @@ public sealed class TabRules
             {
                 foreach (var item in p.EnumerateArray())
                 {
-                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } path) paths.Add(path);
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } path) paths.Add(path.ToLowerInvariant());
                 }
             }
 
@@ -81,7 +109,9 @@ public sealed class TabRules
         var current = host;
         while (current is not null)
         {
-            if (Domains.Contains(current)) return $"host:{current}";
+            // Rule sets are normalized to lowercase at parse/set, so the domain
+            // comparison is case-insensitive (current is already lowercase).
+            if (Domains.Contains(current, StringComparer.OrdinalIgnoreCase)) return $"host:{current}";
             current = NextSuffix(current);
         }
 
@@ -94,7 +124,9 @@ public sealed class TabRules
                 if (slashIdx <= 0) continue;
                 var ruleHost = rule[..slashIdx];
                 var rulePath = rule[slashIdx..];
-                if (!host.Equals(ruleHost, StringComparison.OrdinalIgnoreCase)) continue;
+                // Compare against the CURRENT walked suffix (not the original
+                // host) so m.youtube.com/shorts matches a youtube.com/shorts rule.
+                if (!current.Equals(ruleHost, StringComparison.OrdinalIgnoreCase)) continue;
                 if (PathMatches(path, rulePath))
                 {
                     return $"path:{ruleHost}{rulePath}";

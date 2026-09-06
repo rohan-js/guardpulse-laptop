@@ -55,6 +55,7 @@ public sealed class BrowserWatcher : IDisposable
     private const int MaxTabStrip = 40;
 
     private readonly PipeClient _pipe;
+    private readonly ForegroundHook _hook;
     private readonly DispatcherTimer _timer;
     private readonly Dispatcher _dispatcher;
     private readonly SemaphoreSlim _scanGate = new(1, 1);
@@ -64,6 +65,13 @@ public sealed class BrowserWatcher : IDisposable
     private nint _lastBrowserHwnd;
     private TabRules _tabRules = new();
     private string? _lastClosedUrl;
+    // Guard-reset tracking: the single-URL _lastClosedUrl guard must reset when
+    // the URL is absent from the scan or the tab set changes, otherwise a tab
+    // that reopened (or a sibling window's identical URL) would never be
+    // enforced again. Track tab-count + active URL per window (by hwnd); any
+    // change clears the guard so the next scan re-evaluates from scratch.
+    private readonly Dictionary<nint, (int TabCount, string? ActiveUrl)> _lastTabState = new();
+    private readonly object _guardGate = new();
     public event Action<string>? BlockedTabClosed;
     private string? _lastBrowserExePath;
     private long _browserFocusLostAtMs;
@@ -136,6 +144,7 @@ public sealed class BrowserWatcher : IDisposable
     public BrowserWatcher(PipeClient pipe, ForegroundHook hook)
     {
         _pipe = pipe;
+        _hook = hook;
         _dispatcher = Dispatcher.CurrentDispatcher; // constructed on the UI thread
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -176,6 +185,9 @@ public sealed class BrowserWatcher : IDisposable
                     _lastBrowserExePath = scan.ExePath;
                     _browserFocusLostAtMs = 0;
                     _graceSnapshotSent = false;
+                    // Recency rotation with the foreground window pinned: move the
+                    // current window to the front, then evict least-recently-seen
+                    // entries (from the back) — never the just-seen foreground one.
                     _recentBrowserHwnds.Remove(scan.BrowserHwnd);
                     _recentBrowserHwnds.Insert(0, scan.BrowserHwnd);
                     while (_recentBrowserHwnds.Count > MaxTrackedBrowserWindows)
@@ -223,7 +235,7 @@ public sealed class BrowserWatcher : IDisposable
             // Real-time enforcement must not depend on which app is foreground:
             // walk EVERY tracked browser window (background included) and close
             // any whose active URL matches the blocked-site rules.
-            EnforceTabRulesAcrossWindows();
+            await EnforceTabRulesAcrossWindowsAsync().ConfigureAwait(true);
         }
         catch (Exception)
         {
@@ -238,15 +250,39 @@ public sealed class BrowserWatcher : IDisposable
     /// <summary>Real-time blocked-site enforcement across ALL tracked browser windows:
     /// a window whose active URL matches the blocked-site rules has THAT tab closed via
     /// UIA (no keystrokes, no focus change, background windows included). One close
-    /// attempt per URL per scan; the guard avoids repeat invocations while it persists.</summary>
-    private void EnforceTabRulesAcrossWindows()
+    /// attempt per URL per scan; the guard resets when the URL leaves the scan or the
+    /// tab set changes, so reopened/twin tabs are enforced again. Title-only fallback
+    /// snapshots never enforce (ActiveUrl must be a real UIA URL or contain a dot);
+    /// UIA capture walks run off the UI thread with a 3s timeout each and never block
+    /// the dispatcher continuation.</summary>
+    private async Task EnforceTabRulesAcrossWindowsAsync()
     {
         if (_tabRules.IsEmpty) return;
 
         List<nint> windows;
+        nint foregroundHwnd = nint.Zero;
         lock (_stateGate)
         {
             windows = _recentBrowserHwnds.Where(IsWindowVisible).ToList();
+            // Recency rotation: most recently seen first, foreground pinned at
+            // the head so the 6-window cap never evicts the window in use.
+            try
+            {
+                foregroundHwnd = GetForegroundWindow();
+            }
+            catch
+            {
+            }
+
+            if (foregroundHwnd != nint.Zero && windows.Contains(foregroundHwnd))
+            {
+                windows.Remove(foregroundHwnd);
+                windows.Insert(0, foregroundHwnd);
+            }
+
+            _recentBrowserHwnds.Clear();
+            _recentBrowserHwnds.AddRange(windows.Take(MaxTrackedBrowserWindows));
+            windows = _recentBrowserHwnds.ToList();
         }
 
         // Fall back to a fresh enumeration when nothing is tracked yet (service
@@ -273,22 +309,60 @@ public sealed class BrowserWatcher : IDisposable
 
         if (windows.Count == 0) return;
 
+        var seenUrls = new HashSet<string>(StringComparer.Ordinal);
         foreach (var hwnd in windows)
         {
-            var exePath = ForegroundHook.GetProcessImagePath(WindowProcessId(hwnd));
-            if (exePath is null) continue;
-            var snapshot = CaptureBrowserWindow(hwnd, exePath);
-            var url = snapshot?.ActiveUrl ?? UrlFromTitle(ForegroundHook.GetWindowTitle(hwnd));
-            if (string.IsNullOrWhiteSpace(url)) continue;
+            // OFF the UI thread with a 3s timeout each: the UIA capture walk
+            // runs on a ThreadPool thread (awaited, never blocking the
+            // dispatcher continuation), and a hung renderer only skips this
+            // window for this scan.
+            BrowserSnapshot? snapshot = null;
+            try
+            {
+                var exePath = ForegroundHook.GetProcessImagePath(WindowProcessId(hwnd));
+                if (exePath is null) continue;
+                var capturedHwnd = hwnd;
+                var capturedExe = exePath;
+                snapshot = await Task.Run(() => CaptureBrowserWindow(capturedHwnd, capturedExe))
+                    .WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(true);
+            }
+            catch (TimeoutException)
+            {
+                continue; // hung UIA tree: skip this window this scan
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            // Gate title-only fallback snapshots OUT of enforcement: only act
+            // when ActiveUrl is a real URL (UIA omnibox read, or at least a
+            // dotted host rather than a bare page title).
+            if (snapshot is null || !IsEnforceableUrl(snapshot)) continue;
+            var url = snapshot.ActiveUrl!;
+            seenUrls.Add(url);
 
             var match = _tabRules.Match(url);
             if (match is null) continue;
+
+            // Tab-set change detection: track tab-count + active URL per window;
+            // any change clears the single-URL guard so enforcement re-fires.
+            var tabCount = snapshot.TabCount;
+            lock (_guardGate)
+            {
+                var changed = !_lastTabState.TryGetValue(hwnd, out var prev)
+                    || prev.TabCount != tabCount
+                    || !string.Equals(prev.ActiveUrl, url, StringComparison.Ordinal);
+                _lastTabState[hwnd] = (tabCount, url);
+                if (changed) _lastClosedUrl = null;
+            }
+
             if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
             {
                 continue; // close already attempted for this exact URL this cycle
             }
 
-            _lastClosedUrl = url;
+            lock (_guardGate) _lastClosedUrl = url;
             var capturedUrl = url;
             _ = Task.Run(() =>
             {
@@ -296,6 +370,7 @@ public sealed class BrowserWatcher : IDisposable
                 {
                     if (!TabEnforcer.CloseSelectedTab(hwnd)) return;
                     _pipe.SendTabClosed(capturedUrl);
+                    BlockedTabClosed?.Invoke(capturedUrl);
                 }
                 catch
                 {
@@ -303,6 +378,29 @@ public sealed class BrowserWatcher : IDisposable
                 }
             });
         }
+
+        // The guarded URL vanished from every window (tab closed/navigated away):
+        // reset the guard so the same URL enforces again if it reopens.
+        lock (_guardGate)
+        {
+            if (_lastClosedUrl is not null && !seenUrls.Contains(_lastClosedUrl))
+            {
+                _lastClosedUrl = null;
+            }
+
+            // Drop per-window state for windows that are gone entirely.
+            var gone = _lastTabState.Keys.Where(h => !windows.Contains(h)).ToList();
+            foreach (var h in gone) _lastTabState.Remove(h);
+        }
+    }
+
+    /// <summary>True only when the snapshot carries a real URL: a UIA omnibox
+    /// read, or at least a dotted host (never a bare title-only guess).</summary>
+    private static bool IsEnforceableUrl(BrowserSnapshot snapshot)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot.ActiveUrl)) return false;
+        if (string.Equals(snapshot.UrlSource, "uia", StringComparison.OrdinalIgnoreCase)) return true;
+        return snapshot.ActiveUrl.Contains('.', StringComparison.Ordinal);
     }
 
     /// <summary>Best-effort URL from a window title ("Site - Browser" → "site").</summary>
@@ -649,6 +747,7 @@ public sealed class BrowserWatcher : IDisposable
 
         _disposed = true;
         _timer.Stop();
+        _hook.ForegroundChanged -= OnForegroundChangedScan;
         _scanGate.Dispose();
     }
 

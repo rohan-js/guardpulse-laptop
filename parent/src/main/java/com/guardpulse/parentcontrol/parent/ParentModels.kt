@@ -271,5 +271,11 @@ internal fun ParentSyncUiState.isAppPolicyPending(packageName: String): Boolean 
     val confirmedRule = confirmed.apps[packageName]
     return desiredRule?.manualBlocked != confirmedRule?.manualBlocked ||
         desiredRule?.dailyLimitMinutes != confirmedRule?.dailyLimitMinutes ||
-        desiredRule?.sessionLimitMinutes != confirmedRule?.sessionLimitMinutes
+        desiredRule?.sessionLimitMinutes != confirmedRule?.sessionLimitMinutes ||
+        desired.modes != confirmed.modes ||
+        desired.activeMode != confirmed.activeMode ||
+        desired.safeMode != confirmed.safeMode ||
+        desired.budget?.dailyLimitMinutes != confirmed.budget?.dailyLimitMinutes ||
+        desired.allowlist?.enabled != confirmed.allowlist?.enabled ||
+        desired.customBlockedDomains?.domains != confirmed.customBlockedDomains?.domains
 }

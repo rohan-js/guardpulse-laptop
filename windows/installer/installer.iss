@@ -4,6 +4,7 @@
 ; and Run-key fallback — all elevated, all silent.
 
 #define AppVersion "0.2.31"
+#define AppVersionCode "31"
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"
 
@@ -43,7 +44,7 @@ VersionInfoProductName=
 VersionInfoProductTextVersion=
 VersionInfoCopyright=
 VersionInfoOriginalFileName=
-VersionInfoVersion=0.2.13
+VersionInfoVersion={#AppVersion}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -141,17 +142,57 @@ begin
   end;
 end;
 
+function ServiceExists(const Name: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\sc.exe'), 'query ' + Name, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ResultCode = 0;
+end;
+
+function ProcessRunning(const Image: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\tasklist.exe'), '/FI "IMAGENAME eq ' + Image + '" /FO CSV /NH', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ResultCode = 0;
+end;
+
+procedure WaitForServiceGone;
+var
+  i: Integer;
+begin
+  // Handle-exit polling: proceed as soon as the service record disappears (up to 15s).
+  for i := 1 to 30 do
+  begin
+    if not ServiceExists('{#ServiceName}') then Exit;
+    Sleep(500);
+  end;
+end;
+
+procedure WaitForProcessesGone;
+var
+  i: Integer;
+begin
+  // Handle-exit polling: proceed once both agent processes exit (up to 15s).
+  for i := 1 to 30 do
+  begin
+    if not (ProcessRunning('GuardPulse.Agent.Session.exe') or ProcessRunning('GuardPulse.Agent.Service.exe')) then Exit;
+    Sleep(500);
+  end;
+end;
+
 procedure StopExistingStack;
 var
   ResultCode: Integer;
 begin
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(2000);
+  WaitForServiceGone;
   Exec(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1000);
+  WaitForServiceGone;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GuardPulse.Agent.Session.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GuardPulse.Agent.Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1000);
+  WaitForProcessesGone;
 end;
 
 procedure RemoveStaleInstall;
@@ -443,19 +484,21 @@ end;
 procedure StopAgentStack;
 var
   ResultCode: Integer;
+  i: Integer;
 begin
   // Order matters: stopping the service disposes the watchdog, otherwise killing
   // the session below would get it respawned within ~10s. Then kill the session
   // (a standalone per-logon process that file-locks its own exe/dlls even after
   // the service dies), then the service, then delete the service. Result codes
   // are ignored so an already-stopped/already-gone process never aborts uninstall.
+  // Handle-exit polling (up to 15s per stage) replaces the old fixed Sleeps.
   Exec(ExpandConstant('{sys}\net.exe'), 'stop {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(2000);
+  WaitForServiceGone;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GuardPulse.Agent.Session.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GuardPulse.Agent.Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1000);
+  WaitForProcessesGone;
   Exec(ExpandConstant('{sys}\sc.exe'), 'delete {#ServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1000);
+  WaitForServiceGone;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

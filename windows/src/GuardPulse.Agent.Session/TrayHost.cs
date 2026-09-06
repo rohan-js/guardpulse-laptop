@@ -298,8 +298,22 @@ public sealed class TrayHost : IDisposable
         }
 
         var handle = bitmap.GetHicon();
-        return Icon.FromHandle(handle);
+        try
+        {
+            // Clone the Icon so the native HICON can be destroyed immediately:
+            // Icon.FromHandle borrows the handle without owning it, so without
+            // DestroyIcon the GDI handle leaks for the process lifetime.
+            using var owned = Icon.FromHandle(handle);
+            return (Icon)owned.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(nint hIcon);
 
     public void Dispose()
     {

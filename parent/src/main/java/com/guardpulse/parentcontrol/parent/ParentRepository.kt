@@ -194,6 +194,13 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
+        if (approvalDurationMs != null &&
+            approvalDurationMs != PolicyConstants.UNLOCK_15_MINUTES_MS &&
+            approvalDurationMs != PolicyConstants.UNLOCK_30_MINUTES_MS
+        ) {
+            onError("Unlock duration must be 15 or 30 minutes")
+            return
+        }
         val value = mutableMapOf<String, Any?>(
             "status" to status,
             "updatedAt" to ServerValue.TIMESTAMP,
@@ -307,9 +314,15 @@ class ParentRepository(
         onError: (String) -> Unit
     ) {
         val durationMs = durationMinutes.coerceIn(1, 1440) * 60_000L
+        val startedAt = serverClock.now()
+        val until = startedAt + durationMs
+        if (until <= startedAt || until - startedAt > 86_400_000L) {
+            onError("Safe Mode window must be 1 minute to 24 hours")
+            return
+        }
         val value = mapOf(
             "enabled" to true,
-            "until" to serverClock.now() + durationMs,
+            "until" to until,
             "startedAt" to ServerValue.TIMESTAMP,
             "startedBy" to auth.currentUser?.uid
         )

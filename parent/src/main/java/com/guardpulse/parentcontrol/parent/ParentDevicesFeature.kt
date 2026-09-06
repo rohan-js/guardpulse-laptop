@@ -122,7 +122,7 @@ internal fun DevicesTab(
     selectedDeviceId: String?,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
-    onSendMessage: (String, String) -> Unit,
+    onSendMessage: (String, String, () -> Unit, (String) -> Unit) -> Unit,
     pairRequest: PairRequestState?,
     onPair: (String, String, String) -> Unit,
     onScanQr: () -> Unit
@@ -248,7 +248,7 @@ internal fun DeviceCard(
     selected: Boolean,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
-    onSendMessage: (String, String) -> Unit
+    onSendMessage: (String, String, () -> Unit, (String) -> Unit) -> Unit
 ) {
     GuardCard(
         modifier = Modifier
@@ -294,6 +294,8 @@ internal fun DeviceCard(
 
         var messageText by remember { mutableStateOf("") }
         var sending by remember { mutableStateOf(false) }
+        var sendError by remember { mutableStateOf<String?>(null) }
+        var recentMessages by remember { mutableStateOf(listOf<Pair<String, Long>>()) }
         Row(
             Modifier.fillMaxWidth().padding(top = 12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -304,6 +306,8 @@ internal fun DeviceCard(
                 label = { Text("Message to laptop") },
                 placeholder = { Text("Shown on the laptop screen") },
                 enabled = !sending,
+                isError = sendError != null,
+                supportingText = sendError?.let { { Text(it, color = AlertRed) } },
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.width(10.dp))
@@ -311,14 +315,40 @@ internal fun DeviceCard(
                 onClick = {
                     if (messageText.isNotBlank()) {
                         sending = true
-                        onSendMessage(device.deviceId, messageText)
-                        messageText = ""
-                        sending = false
+                        sendError = null
+                        val pending = messageText
+                        onSendMessage(
+                            device.deviceId,
+                            pending,
+                            {
+                                recentMessages = (listOf(pending to System.currentTimeMillis()) + recentMessages).take(5)
+                                messageText = ""
+                                sending = false
+                            },
+                            { error ->
+                                sendError = error
+                                sending = false
+                            }
+                        )
                     }
                 },
                 enabled = !sending && messageText.isNotBlank()
             ) {
                 Text("Send")
+            }
+        }
+        if (recentMessages.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Recent messages", style = MaterialTheme.typography.labelSmall, color = TextMuted, fontWeight = FontWeight.Bold)
+                recentMessages.forEach { (text, sentAt) ->
+                    Text(
+                        "$text — ${formatTimestamp(sentAt)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextMuted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

@@ -112,10 +112,21 @@ Write-Host "[5/5] Building installer with Inno Setup..." -ForegroundColor Yellow
 $IssFile = Join-Path $InstallerDir "installer.iss"
 if (-not (Test-Path $Issc)) { throw "ISCC.exe not found at $Issc" }
 
-& $Issc /O"$OutputDir" "$IssFile"
+# Version single-source: gradle.properties (guardpulse.versionName/versionCode) wins.
+# ISCC /D overrides the #define defaults in installer.iss.
+$VersionName = $null
+$VersionCode = $null
+foreach ($line in (Get-Content (Join-Path $Root "gradle.properties"))) {
+    if ($line -match '^\s*guardpulse\.versionName\s*=\s*(.+?)\s*$') { $VersionName = $Matches[1] }
+    if ($line -match '^\s*guardpulse\.versionCode\s*=\s*(.+?)\s*$') { $VersionCode = $Matches[1] }
+}
+if ([string]::IsNullOrWhiteSpace($VersionName)) { throw "guardpulse.versionName not found in gradle.properties" }
+if ([string]::IsNullOrWhiteSpace($VersionCode)) { throw "guardpulse.versionCode not found in gradle.properties" }
+
+& $Issc /O"$OutputDir" /DAppVersion="$VersionName" /DAppVersionCode="$VersionCode" "$IssFile"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$ExePath = Join-Path $OutputDir "DeviceServiceSetup-0.2.31.exe"
+$ExePath = Join-Path $OutputDir "DeviceServiceSetup-$VersionName.exe"
 if (Test-Path $ExePath) {
     Write-Host ""
     Write-Host "=== BUILD COMPLETE ===" -ForegroundColor Green

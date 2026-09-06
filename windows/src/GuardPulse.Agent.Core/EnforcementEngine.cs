@@ -1,4 +1,4 @@
-namespace GuardPulse.Agent.Core;
+﻿namespace GuardPulse.Agent.Core;
 
 using GuardPulse.Protocol;
 
@@ -64,7 +64,9 @@ public sealed class EnforcementEngine
         return !within;
     }
 
-    /// <summary>True when the sum of today's per-app usage reaches the whole-device budget.</summary>
+    /// <summary>True when the sum of today's per-app usage reaches the whole-device budget.
+    /// Uses EFFECTIVE (reset-offset-adjusted) usage so Reset-Today clears a budget lock
+    /// exactly like the per-app checks and the warning toasts do.</summary>
     public bool BudgetExceeded(ControlSnapshotV2 snapshot, UsageLedger ledger)
     {
         if (snapshot.Budget is not { } budget)
@@ -73,9 +75,9 @@ public sealed class EnforcementEngine
         }
 
         long totalMs = 0;
-        foreach (var usage in ledger.UsageMsToday().Values)
+        foreach (var appKey in ledger.UsageMsToday().Keys)
         {
-            totalMs += usage;
+            totalMs += ledger.EffectiveUsageMsToday(appKey);
         }
 
         return totalMs >= (long)budget.DailyLimitMinutes * MsPerMinute;
@@ -136,11 +138,9 @@ public sealed class EnforcementEngine
 
         var apps = snapshot.EffectiveApps();
 
-        if (unlocks.IsUnlocked(appKey, serverNowMs))
-        {
-            return NotLocked(appKey);
-        }
-
+        // Allowlist + bypass-default-lock BEFORE the unlock arm: an approved unlock
+        // excuses per-app reasons (manual/daily/session) but must NOT admit apps the
+        // parent never approved, and must never open bypass tools.
         if (IsBlockedByAllowlist(snapshot, appKey))
         {
             return Locked(appKey, PolicyConstants.BLOCK_REASON_NOT_APPROVED);
@@ -154,6 +154,11 @@ public sealed class EnforcementEngine
                 return Locked(appKey, PolicyConstants.BLOCK_REASON_MANUAL);
             }
 
+            return NotLocked(appKey);
+        }
+
+        if (unlocks.IsUnlocked(appKey, serverNowMs))
+        {
             return NotLocked(appKey);
         }
 

@@ -27,7 +27,7 @@
       "$deviceId": {
         ".read": "auth != null && (data.child('meta').child('ownerUid').val() == auth.uid || data.child('meta').child('tvUid').val() == auth.uid)",
         "meta": {
-          ".write": "auth != null && ((!data.exists() && newData.child('tvUid').val() == auth.uid) || (data.child('tvUid').val() == auth.uid && (newData.child('ownerUid').val() == data.child('ownerUid').val() || (!data.child('ownerUid').exists() && newData.child('ownerUid').isString()) || (data.child('ownerUid').exists() && !newData.child('ownerUid').exists()))))",
+          ".write": "auth != null && ((!data.exists() && newData.child('tvUid').val() == auth.uid) || (data.child('tvUid').val() == auth.uid && (newData.child('ownerUid').val() == data.child('ownerUid').val() || (!data.child('ownerUid').exists() && newData.child('ownerUid').isString()) || (data.child('ownerUid').exists() && !newData.child('ownerUid').exists()))) || (data.child('ownerUid').val() == auth.uid && newData.child('ownerUid').isString() && newData.child('ownerUid').val() != data.child('ownerUid').val() && newData.child('tvUid').val() == data.child('tvUid').val()))",
           ".validate": "newData.hasChildren(['deviceId', 'tvUid']) && newData.child('deviceId').val() == $deviceId && newData.child('tvUid').isString() && (!newData.child('ownerUid').exists() || newData.child('ownerUid').isString()) && (!newData.child('platform').exists() || (newData.child('platform').isString() && newData.child('platform').val().length <= 32)) && (!newData.child('label').exists() || newData.child('label').isString()) && (!newData.child('manufacturer').exists() || newData.child('manufacturer').isString()) && (!newData.child('model').exists() || newData.child('model').isString()) && (!newData.child('androidSdk').exists() || newData.child('androidSdk').isNumber()) && (!newData.child('appVersion').exists() || newData.child('appVersion').isString()) && (!newData.child('lastRegisteredAt').exists() || newData.child('lastRegisteredAt').isNumber()) && (!newData.child('pairedAt').exists() || newData.child('pairedAt').isNumber())",
           "deviceId": {},
           "tvUid": {},
@@ -267,23 +267,54 @@
           "apps": {
             "$packageKey": {
               ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
-              ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('sessionLimitMinutes').exists() || (newData.child('sessionLimitMinutes').isNumber() && newData.child('sessionLimitMinutes').val() > 0 && newData.child('sessionLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+              ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('sessionLimitMinutes').exists() || (newData.child('sessionLimitMinutes').isNumber() && newData.child('sessionLimitMinutes').val() > 0 && newData.child('sessionLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())",
+              "packageName": {},
+              "manualBlocked": {},
+              "dailyLimitMinutes": {},
+              "sessionLimitMinutes": {},
+              "updatedAt": {},
+              "$other": {
+                ".validate": false
+              }
             }
           },
           "modes": {
             "$modeId": {
               ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
               ".validate": "!newData.exists() || (newData.hasChildren(['modeId', 'name']) && newData.child('modeId').val() == $modeId && newData.child('name').isString() && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))",
+              "modeId": {},
+              "name": {},
+              "createdAt": {},
+              "updatedAt": {},
+              "updatedBy": {},
               "apps": {
                 "$packageKey": {
-                  ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('sessionLimitMinutes').exists() || (newData.child('sessionLimitMinutes').isNumber() && newData.child('sessionLimitMinutes').val() > 0 && newData.child('sessionLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+                  ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('sessionLimitMinutes').exists() || (newData.child('sessionLimitMinutes').isNumber() && newData.child('sessionLimitMinutes').val() > 0 && newData.child('sessionLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())",
+                  "packageName": {},
+                  "manualBlocked": {},
+                  "dailyLimitMinutes": {},
+                  "sessionLimitMinutes": {},
+                  "updatedAt": {},
+                  "$other": {
+                    ".validate": false
+                  }
                 }
+              },
+              "$other": {
+                ".validate": false
               }
             }
           },
           "activeMode": {
             ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
-            ".validate": "!newData.exists() || (newData.hasChildren(['modeId']) && newData.child('modeId').isString() && (!newData.child('modeName').exists() || newData.child('modeName').isString()) && (!newData.child('activatedAt').exists() || newData.child('activatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))"
+            ".validate": "!newData.exists() || (newData.hasChildren(['modeId']) && newData.child('modeId').isString() && (!newData.child('modeName').exists() || newData.child('modeName').isString()) && (!newData.child('activatedAt').exists() || newData.child('activatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid))",
+            "modeId": {},
+            "modeName": {},
+            "activatedAt": {},
+            "updatedBy": {},
+            "$other": {
+              ".validate": false
+            }
           }
         },
         "control": {

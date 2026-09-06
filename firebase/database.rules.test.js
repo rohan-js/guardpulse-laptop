@@ -1125,6 +1125,21 @@ test("message text over 500 chars rejected", async () => {
   );
 });
 
+test("a second parent cannot steal ownership while one exists", async () => {
+  // Arbitrary parent (not tvUid holder, not current owner) may not set ownerUid.
+  await assertFails(
+    dbAs("otherParent").ref("devices/tv1/meta/ownerUid").set("otherParent")
+  );
+  // The tvUid holder may only reaffirm the same owner, not swap it.
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/meta").update({ ownerUid: "otherParent" })
+  );
+  // Only the CURRENT owner may transfer ownership to a new uid.
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/meta").update({ ownerUid: "otherParent" })
+  );
+});
+
 test("current owner can re-pair own device without unpair command", async () => {
   // meta.ownerUid already == parentUid (the missed-unpair deadlock):
   // the same parent may create a fresh pair request for their own device.

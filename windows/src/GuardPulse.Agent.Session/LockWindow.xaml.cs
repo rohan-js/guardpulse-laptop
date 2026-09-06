@@ -139,7 +139,40 @@ public partial class LockWindow : Window
         _appKey = "";
         _blockedTimer.Stop();
         ClearPin();
+        PruneMinimized();
         if (IsVisible) Hide();
+    }
+
+    /// <summary>Drops minimized-window entries whose process has exited, so the
+    /// table never grows with dead PIDs across repeated hide paths.</summary>
+    private void PruneMinimized()
+    {
+        if (_minimizedByPid.Count == 0) return;
+        var dead = new List<int>();
+        foreach (var pid in _minimizedByPid.Keys)
+        {
+            bool alive;
+            try
+            {
+                using var proc = System.Diagnostics.Process.GetProcessById(pid);
+                alive = !proc.HasExited;
+            }
+            catch
+            {
+                alive = false;
+            }
+
+            if (!alive) dead.Add(pid);
+        }
+
+        foreach (var pid in dead) _minimizedByPid.Remove(pid);
+    }
+
+    /// <summary>Clears all tracked minimized windows (explicit service unlock):
+    /// every entry is restored-or-dead, so nothing must survive the unlock.</summary>
+    public void ClearMinimized()
+    {
+        _minimizedByPid.Clear();
     }
 
     /// <summary>
@@ -176,13 +209,22 @@ public partial class LockWindow : Window
     {
         if (WindowState == WindowState.Minimized)
         {
+            // An external minimize (taskbar, Win+D handled by the shell) must
+            // never hand the desktop back: cloak + minimize the blocked app and
+            // restore the wall instead of staying minimized/hidden.
             DesktopMinimized?.Invoke();
             var key = _appKey;
             if (!string.IsNullOrEmpty(key))
             {
                 MinimizeBlockedApp(key);
             }
-            Hide();
+
+            WindowState = WindowState.Normal;
+            CoverVirtualDesktop();
+            Topmost = false;
+            Topmost = true;
+            Activate();
+            Focus();
         }
         else
         {
@@ -203,28 +245,17 @@ public partial class LockWindow : Window
         {
             foreach (var process in System.Diagnostics.Process.GetProcesses())
             {
-                if (!MatchesForMinimize(process, appKey)) continue;
-                if (process.HasExited) continue;
-                var pid = process.Id;
-                _minimizedByPid[pid] = appKey;
-
-                try
+                using (process)
                 {
-                    var hwnd = process.MainWindowHandle;
-                    if (hwnd != IntPtr.Zero && IsWindowVisible(hwnd))
-                    {
-                        CloakWindow(hwnd, true);
-                        ShowWindow(hwnd, SwMinimize);
-                    }
-                }
-                catch { }
+                    if (!MatchesForMinimize(process, appKey)) continue;
+                    if (process.HasExited) continue;
+                    var pid = process.Id;
+                    _minimizedByPid[pid] = appKey;
 
-                EnumWindows((hwnd, _) =>
-                {
                     try
                     {
-                        GetWindowThreadProcessId(hwnd, out var winPid);
-                        if (winPid == (uint)pid && IsWindowVisible(hwnd))
+                        var hwnd = process.MainWindowHandle;
+                        if (hwnd != IntPtr.Zero && IsWindowVisible(hwnd))
                         {
                             CloakWindow(hwnd, true);
                             ShowWindow(hwnd, SwMinimize);
@@ -232,8 +263,22 @@ public partial class LockWindow : Window
                     }
                     catch { }
 
-                    return true;
-                }, IntPtr.Zero);
+                    EnumWindows((hwnd, _) =>
+                    {
+                        try
+                        {
+                            GetWindowThreadProcessId(hwnd, out var winPid);
+                            if (winPid == (uint)pid && IsWindowVisible(hwnd))
+                            {
+                                CloakWindow(hwnd, true);
+                                ShowWindow(hwnd, SwMinimize);
+                            }
+                        }
+                        catch { }
+
+                        return true;
+                    }, IntPtr.Zero);
+                }
             }
         }
         catch { }
@@ -250,7 +295,7 @@ public partial class LockWindow : Window
             {
                 try
                 {
-                    var proc = System.Diagnostics.Process.GetProcessById(pid);
+                    using var proc = System.Diagnostics.Process.GetProcessById(pid);
                     var hwnd = proc.MainWindowHandle;
                     if (hwnd != IntPtr.Zero)
                     {
@@ -282,6 +327,10 @@ public partial class LockWindow : Window
         }
     }
 
+    /// <summary>Win+D / Escape shell gesture: cloak + minimize the blocked app's
+    /// windows but NEVER hide the wall itself. The wall lifts only on service
+    /// unlock (or Alt+F4 close after verified process exit), so a shell gesture
+    /// must leave it up.</summary>
     public void TriggerShowDesktop()
     {
         DesktopMinimized?.Invoke();
@@ -290,8 +339,10 @@ public partial class LockWindow : Window
         {
             MinimizeBlockedApp(key);
         }
-        WindowState = WindowState.Minimized;
-        HideLock();
+
+        // Keep the wall visible: re-assert it over the virtual desktop instead
+        // of minimizing/hiding (a minimized wall would hand the desktop back).
+        Reassert();
     }
 
     private static bool MatchesForMinimize(System.Diagnostics.Process process, string appKey)
@@ -503,10 +554,11 @@ public partial class LockWindow : Window
         if (string.IsNullOrEmpty(appKey)) { HideLock(); return; }
         try
         {
-            var matched = false;
+            var matchedPids = new List<int>();
             foreach (var process in System.Diagnostics.Process.GetProcesses())
             {
                 bool isMatch = false;
+                int pid = -1;
                 try
                 {
                     var exePath = process.MainModule?.FileName ?? "";
@@ -529,26 +581,62 @@ public partial class LockWindow : Window
                         }
                         else if (!string.IsNullOrEmpty(fileName) && string.Equals(fileName, appKey, StringComparison.OrdinalIgnoreCase)) isMatch = true;
                     }
+
+                    pid = process.Id;
                 }
                 catch { }
 
-                if (!isMatch) continue;
-                matched = true;
+                process.Dispose();
+
+                if (!isMatch || pid < 0) continue;
+                matchedPids.Add(pid);
                 try
                 {
-                    if (process.HasExited) continue;
-                    if (process.CloseMainWindow())
+                    using var target = System.Diagnostics.Process.GetProcessById(pid);
+                    if (target.HasExited) continue;
+                    if (target.CloseMainWindow())
                     {
-                        if (process.WaitForExit(1000)) continue;
+                        if (target.WaitForExit(1000)) continue;
                     }
-                    process.Kill(entireProcessTree: true);
+                    target.Kill(entireProcessTree: true);
                 }
                 catch { }
             }
 
-            _minimizedByPid.Clear();
+            // Alt+F4 / close hides the wall ONLY after verified process exit:
+            // poll HasExited with a 2s timeout; if any matched process is still
+            // alive, re-show the wall instead of hiding it.
+            var deadline = Environment.TickCount64 + 2000;
+            var stillAlive = false;
+            foreach (var pid in matchedPids)
+            {
+                try
+                {
+                    using var proc = System.Diagnostics.Process.GetProcessById(pid);
+                    while (!proc.HasExited && Environment.TickCount64 < deadline)
+                    {
+                        Thread.Sleep(50);
+                    }
+
+                    if (!proc.HasExited) stillAlive = true;
+                }
+                catch (ArgumentException)
+                {
+                    // pid gone: exited, as required
+                }
+                catch { }
+            }
+
+            PruneMinimized();
+            if (stillAlive)
+            {
+                // The app survived the close attempt: keep the wall up.
+                Reassert();
+                return;
+            }
+
+            ClearMinimized();
             HideLock();
-            if (!matched) HideLock();
         }
         catch { HideLock(); }
     }
@@ -645,10 +733,32 @@ public partial class LockWindow : Window
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr param);
 
     private bool IsEnabledForClose { get; set; }
+    private bool _teardown;
 
     public void ForceClose()
     {
         IsEnabledForClose = true;
         Close();
+    }
+
+    /// <summary>Stops the PIN-blocked countdown and destroys the hidden owner
+    /// window (called on app exit so neither outlives the session agent).</summary>
+    public void Teardown()
+    {
+        if (_teardown) return;
+        _teardown = true;
+        _blockedTimer.Stop();
+        _iconCache.Clear();
+        if (_hiddenOwner != null)
+        {
+            var owner = _hiddenOwner;
+            _hiddenOwner = null;
+            try
+            {
+                Owner = null;
+                owner.Close();
+            }
+            catch { }
+        }
     }
 }

@@ -9,7 +9,7 @@ namespace GuardPulse.Agent.Session;
 
 public partial class SetupWindow : Window
 {
-    private static readonly TimeSpan DeviceInfoTimeout = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan DeviceInfoTimeout = TimeSpan.FromSeconds(8);
 
     private readonly PipeClient _pipe;
     private readonly System.Windows.Threading.DispatcherTimer _refresh =

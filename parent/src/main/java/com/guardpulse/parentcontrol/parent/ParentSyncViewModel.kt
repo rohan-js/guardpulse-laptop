@@ -277,13 +277,24 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         )
     }
 
-    fun sendMessage(deviceId: String, text: String) {
+    fun sendMessage(
+        deviceId: String,
+        text: String,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
         writer?.sendMessage(
             deviceId,
             text,
-            onSuccess = { setMessage("Message sent to laptop") },
-            onError = ::setMessage
-        )
+            onSuccess = {
+                setMessage("Message sent to laptop")
+                onSuccess()
+            },
+            onError = {
+                setMessage(it)
+                onError(it)
+            }
+        ) ?: onError("Firebase is unavailable")
     }
 
     // Devices the parent asked to remove whose laptop has not confirmed yet
@@ -655,6 +666,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun observePairRequest(deviceId: String, requestId: String) {
+        syncRepository?.expirePairRequests(deviceId, serverClock.now())
         syncRepository?.observePairRequest(
             deviceId,
             requestId,

@@ -60,8 +60,14 @@ internal static class TabEnforcer
         }
     }
 
-    /// <summary>Finds the per-tab close button ("Close tab" name on Chromium variants),
-    /// falling back to the tab's only button descendant.</summary>
+    /// <summary>Finds the per-tab close button. Fallback order, each documented:
+    /// 1. "Close tab" name match (Chromium variants, English UI);
+    /// 2. AutomationId containing "close" (case-insensitive) — covers Firefox
+    ///    and localized Chromium strips where the accessible name is translated
+    ///    but the automation id keeps the English token;
+    /// 3. the LAST button descendant — Chromium renders the close affordance at
+    ///    the tab's trailing edge, so with >=1 button the final one is the
+    ///    close button (single-button strips keep the old behavior as a subset).</summary>
     private static AutomationElement? FindCloseButton(AutomationElement tab)
     {
         try
@@ -77,19 +83,41 @@ internal static class TabEnforcer
             return null;
         }
 
+        AutomationElementCollection? buttons = null;
         try
         {
-            var buttons = tab.FindAll(TreeScope.Descendants,
+            buttons = tab.FindAll(TreeScope.Descendants,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-            if (buttons is not null && buttons.Count == 1)
-            {
-                return buttons[0];
-            }
         }
         catch (ElementNotAvailableException)
         {
         }
 
-        return null;
+        if (buttons is null || buttons.Count == 0) return null;
+
+        // Fallback 2: automation id keeps the English "close" token on
+        // Firefox/localized strips where the accessible name is translated.
+        foreach (AutomationElement button in buttons)
+        {
+            string? automationId;
+            try
+            {
+                automationId = button.Current.AutomationId;
+            }
+            catch (ElementNotAvailableException)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(automationId)
+                && automationId.Contains("close", StringComparison.OrdinalIgnoreCase))
+            {
+                return button;
+            }
+        }
+
+        // Fallback 3: Chromium puts the close button at the tab's trailing edge,
+        // so the last button descendant is the close affordance.
+        return buttons[buttons.Count - 1];
     }
 }

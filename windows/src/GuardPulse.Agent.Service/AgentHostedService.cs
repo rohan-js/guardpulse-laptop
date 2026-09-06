@@ -218,6 +218,22 @@ public sealed partial class AgentHostedService(
         _logger.LogInformation("Device service orchestrator stopping");
         try
         {
+            // Offline presence: the phone must not show this laptop online for the
+            // next staleness window after a graceful shutdown.
+            if (_firebase is not null && !string.IsNullOrEmpty(_deviceId))
+            {
+                var offline = new JsonObject { ["online"] = false, ["lastSeen"] = Sv() };
+                await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId),
+                    offline.ToJsonString(JsonOpts), CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Offline heartbeat write during stop failed");
+        }
+
+        try
+        {
             // Persist debounced state (sessions/activity) before anything else so a
             // normal stop loses nothing; crash-window semantics are unchanged.
             _ledger?.FlushDirty();
@@ -505,7 +521,7 @@ public sealed partial class AgentHostedService(
     {
         _syncEngine.ControlApplied += snapshot => _ = HandleControlAppliedAsync(snapshot);
         _syncEngine.ControlRejected += reason => _logger.LogWarning("Control revision rejected: {Reason}", reason);
-        _syncEngine.CommandReceived += raw => _ = HandleCommandsStreamAsync(raw);
+        _syncEngine.CommandReceived += raw => _ = RunSafeAsync("commands-stream", () => HandleCommandsStreamAsync(raw));
         // The SSE client reconnects on its own; surface the errors so stream outages
         // are diagnosable from the service log instead of being swallowed.
         _syncEngine.StreamError += (path, error) =>
@@ -539,7 +555,13 @@ public sealed partial class AgentHostedService(
                 var (helloLocked, helloReason) = DecideFor(_currentAppKey ?? "");
                 if (!helloLocked)
                 {
-                    _suspender.ResumeAll();
+                    // Selective resume: ResumeAll here would release suspensions for
+                    // OTHER still-locked apps until the next boundary tick.
+                    if (!string.IsNullOrEmpty(_currentAppKey))
+                    {
+                        _suspender.ResumeProcessesForApp(_currentAppKey);
+                    }
+
                     _pipeHost.BroadcastUnlock();
                 }
                 else if (!string.IsNullOrEmpty(_currentAppKey))
@@ -1020,7 +1042,13 @@ var minutes = ms / 60_000L;
             var blocked = new JsonArray();
             var dailyBlocked = new JsonArray();
             var sessionBlocked = new JsonArray();
+            var allowlistApps = new JsonArray();
             var safeMode = false;
+            var allowlistEnabled = false;
+            var scheduleEnabled = false;
+            var scheduleStart = 0;
+            var scheduleEnd = 0;
+            var deviceLocked = false;
 
             if (snapshot is not null)
             {
@@ -1044,6 +1072,38 @@ var minutes = ms / 60_000L;
                     }
                 }
 
+                // Offline fail-closed state: the session agent must be able to keep
+                // enforcing allowlist / schedule / whole-device (budget/schedule wall)
+                // while the pipe is dead.
+                if (snapshot.Allowlist is { Enabled: true })
+                {
+                    allowlistEnabled = true;
+                    foreach (var (appKey, rule) in apps)
+                    {
+                        if (!rule.ManualBlocked)
+                        {
+                            allowlistApps.Add(appKey);
+                        }
+                    }
+                }
+
+                if (snapshot.Schedule is { Enabled: true })
+                {
+                    scheduleEnabled = true;
+                    scheduleStart = snapshot.Schedule.StartMinute;
+                    scheduleEnd = snapshot.Schedule.EndMinute;
+                    if (_enforcement.OutsideAllowedHours(snapshot))
+                    {
+                        deviceLocked = true;
+                    }
+                }
+
+                if (snapshot.Budget is { DailyLimitMinutes: > 0 }
+                    && _enforcement.BudgetExceeded(snapshot, _ledger))
+                {
+                    deviceLocked = true;
+                }
+
                 // Bypass tools without any rule row are default-locked.
                 foreach (var bypass in PolicyConstants.WindowsBypassPackages)
                 {
@@ -1060,7 +1120,16 @@ var minutes = ms / 60_000L;
                 ["safeMode"] = safeMode,
                 ["blockedApps"] = blocked,
                 ["dailyBlockedApps"] = dailyBlocked,
-                ["sessionBlockedApps"] = sessionBlocked
+                ["sessionBlockedApps"] = sessionBlocked,
+                ["allowlistEnabled"] = allowlistEnabled,
+                ["allowlistApps"] = allowlistApps,
+                ["schedule"] = new JsonObject
+                {
+                    ["enabled"] = scheduleEnabled,
+                    ["startMinute"] = scheduleStart,
+                    ["endMinute"] = scheduleEnd
+                },
+                ["deviceLocked"] = deviceLocked
             };
             TryWriteText(Path.Combine(_stateDir, "policy-cache.json"), payload.ToJsonString(JsonOpts));
 
@@ -1867,7 +1936,22 @@ var minutes = ms / 60_000L;
                         FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId,
                         new JsonObject { ["status"] = "running" }.ToJsonString(JsonOpts), _ct);
 
-                    await ExecuteCommandAsync(type, packageName: null);
+                    // Dedupe like the normal path: the claim alone does not stop the
+                    // SSE replay from re-delivering this command on reconnect.
+                    lock (_dedupeGate)
+                    {
+                        _processedCommands.Add(commandId);
+                        TrimProcessedCommandsLocked();
+                    }
+
+                    try
+                    {
+                        await ExecuteCommandAsync(type, packageName: null);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Expired unpair execution failed");
+                    }
 
                     await _firebase.PatchAsync(
                         FirebasePaths.DeviceCommands(_deviceId) + "/" + commandId,
@@ -3049,7 +3133,7 @@ var minutes = ms / 60_000L;
 
                 var text = GetString(child.Value, "text");
                 var createdAt = GetLong(child.Value, "createdAt");
-                var age = createdAt > 0 ? NowMs() - createdAt : long.MaxValue;
+                var age = createdAt > 0 ? _syncEngine.ServerNowMs() - createdAt : long.MaxValue;
 
                 // Delete after display (owner may also delete from the phone).
                 try
@@ -3265,7 +3349,8 @@ var minutes = ms / 60_000L;
     private Task HandleUnlockStreamAsync(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw) || raw.Trim() == "null") return Task.CompletedTask;
-        return HandleUnlockJsonAsync(raw);
+        // Malformed SSE payloads must not become unobserved task exceptions.
+        return RunSafeAsync("unlock-stream-json", () => HandleUnlockJsonAsync(raw));
     }
 
     private Task HandlePairStreamAsync(string? raw)
@@ -3280,7 +3365,7 @@ var minutes = ms / 60_000L;
     private Task HandleCommandsStreamAsync(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw) || raw.Trim() == "null") return Task.CompletedTask;
-        return HandleCommandsJsonAsync(raw);
+        return RunSafeAsync("commands-stream-json", () => HandleCommandsJsonAsync(raw));
     }
 
     private async Task IntervalLoopAsync(string name, TimeSpan interval, Func<Task> body)

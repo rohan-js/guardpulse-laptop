@@ -30,6 +30,7 @@ public sealed class ForegroundHook : IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly object _stateGate = new();
     private string? _lastAppKey;
+    private bool _disposed;
 
     /// <summary>App key of the most recent foreground report ("__agent__" for our own UI); used by the service-offline fallback lock.</summary>
     public string? LastReportedAppKey { get { lock (_stateGate) return _lastAppKey; } }
@@ -47,8 +48,20 @@ public sealed class ForegroundHook : IDisposable
         _poll.Elapsed += (_, _) => PollOnce();
         _poll.Start();
         // After a reconnect the service no longer knows the current foreground
-        // app (its dedupe would swallow the repeat), so force one fresh report.
-        _pipe.Connected += ResetDedupe;
+        // app (PipeClient's dedupe would swallow the repeat), so force one fresh
+        // report. Bypass-dedupe-once: reset only the pipe-side dedupe in
+        // PipeClient (via ForcePublishForeground) AND the local one here, then
+        // re-publish the current foreground immediately on connect.
+        _pipe.Connected += OnPipeConnected;
+        PollOnce();
+    }
+
+    private void OnPipeConnected()
+    {
+        // Reset the local dedupe so Publish re-fires, and bypass the
+        // PipeClient-side dedupe once so the repeat is actually sent.
+        _pipe.ForcePublishForeground();
+        ResetDedupe();
         PollOnce();
     }
 
@@ -208,6 +221,9 @@ public sealed class ForegroundHook : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        _pipe.Connected -= OnPipeConnected;
         _poll.Stop();
         _poll.Dispose();
         if (_hook != nint.Zero) UnhookWinEvent(_hook);

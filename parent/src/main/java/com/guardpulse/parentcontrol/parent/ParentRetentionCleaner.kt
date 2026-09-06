@@ -22,6 +22,7 @@ class ParentRetentionCleaner(private val database: DatabaseReference) {
             now - TERMINAL_RETENTION_MS,
             setOf(PolicyConstants.UNLOCK_APPROVED, PolicyConstants.UNLOCK_DENIED, PolicyConstants.UNLOCK_EXPIRED)
         )
+        cleanupMessages(deviceId, now)
         cleanupTamperEvents(deviceId, now)
     }
 
@@ -36,6 +37,25 @@ class ParentRetentionCleaner(private val database: DatabaseReference) {
                         val key = child.key ?: return@mapNotNull null
                         val status = child.child("status").getValue(String::class.java)
                         if (status !in terminalStatuses) return@mapNotNull null
+                        "$path/$key" to null
+                    }.toMap()
+                    if (updates.isNotEmpty()) database.updateChildren(updates)
+                }
+
+                override fun onCancelled(error: DatabaseError) = Unit
+            })
+    }
+
+    private fun cleanupMessages(deviceId: String, now: Long) {
+        val path = FirebasePaths.deviceMessages(deviceId)
+        database.child(path)
+            .orderByChild("createdAt")
+            .endAt((now - MESSAGE_RETENTION_MS).toDouble())
+            .limitToFirst(CLEANUP_BATCH_SIZE)
+            .addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val updates = snapshot.children.mapNotNull { child ->
+                        val key = child.key ?: return@mapNotNull null
                         "$path/$key" to null
                     }.toMap()
                     if (updates.isNotEmpty()) database.updateChildren(updates)
@@ -72,6 +92,7 @@ class ParentRetentionCleaner(private val database: DatabaseReference) {
 
     private companion object {
         const val TERMINAL_RETENTION_MS = 7L * 24 * 60 * 60_000
+        const val MESSAGE_RETENTION_MS = 7L * 24 * 60 * 60_000
         const val TAMPER_RETENTION_MS = 30L * 24 * 60 * 60_000
         const val MAX_TAMPER_EVENTS = 200
         const val TAMPER_QUERY_LIMIT = 250

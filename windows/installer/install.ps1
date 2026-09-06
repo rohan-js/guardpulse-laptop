@@ -38,12 +38,26 @@ if (-not (Test-Path (Join-Path $SourceDir "GuardPulse.Agent.Session.exe"))) {
 $Existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($Existing) {
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    # Handle-exit polling: proceed as soon as the service reports stopped (up to 15s).
+    for ($i = 0; $i -lt 30; $i++) {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $svc -or $svc.Status -eq "Stopped") { break }
+        Start-Sleep -Milliseconds 500
+    }
     & sc.exe delete $ServiceName | Out-Null
-    Start-Sleep -Seconds 2
+    # Handle-exit polling: proceed once the service record disappears (up to 15s).
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 500
+    }
 }
 Get-Process -Name "GuardPulse.Agent.Session", "GuardPulse.Agent.Service" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
+# Handle-exit polling: proceed once both agent processes exit (up to 15s).
+for ($i = 0; $i -lt 30; $i++) {
+    if (-not (Get-Process -Name "GuardPulse.Agent.Session", "GuardPulse.Agent.Service" -ErrorAction SilentlyContinue)) { break }
+    Start-Sleep -Milliseconds 500
+}
 
 # --- copy binaries ------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null

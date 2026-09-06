@@ -1,4 +1,4 @@
-// Fallback enforcement for Windows: suspends processes that belong to a locked app
+﻿// Fallback enforcement for Windows: suspends processes that belong to a locked app
 // via NtSuspendProcess/NtResumeProcess, tracking every pid we suspended so we can
 // resume exactly those. Never touches our own processes, session-0 services, or
 // critical system processes (explorer, csrss, svchost, ...).
@@ -327,6 +327,27 @@ internal sealed class ProcessSuspender
                 }
             }
         }
+    }
+
+    /// <summary>Resumes only the suspended processes belonging to one app (hello-path
+    /// selective resume: ResumeAll would free OTHER still-locked apps until the next
+    /// boundary re-suspension).</summary>
+    public void ResumeProcessesForApp(string appKey)
+    {
+        if (string.IsNullOrEmpty(appKey)) return;
+        List<SuspendedProcess> snapshot;
+        lock (_gate)
+        {
+            snapshot = [.. _suspendedByPid.Values.Where(e => MatchesApp(e.Process, appKey))];
+        }
+
+        var (ok, failed) = ResumeEntriesWithResult(snapshot);
+        lock (_gate)
+        {
+            foreach (var entry in ok) _suspendedByPid.Remove(entry.Process.Id);
+        }
+        foreach (var entry in ok) { entry.Handle.Dispose(); entry.Process.Dispose(); }
+        if (ok.Count > 0) _logger.LogDebug("Resumed {Count} processes for {AppKey}", ok.Count, appKey);
     }
 
     /// <summary>Resumes every process this suspender suspended.</summary>
