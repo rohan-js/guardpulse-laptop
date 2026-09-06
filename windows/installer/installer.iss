@@ -3,8 +3,12 @@
 ; credentials in the wizard, and configures the service, Safe Boot keys, ACLs,
 ; and Run-key fallback — all elevated, all silent.
 
-#define AppVersion "0.2.31"
-#define AppVersionCode "31"
+#ifndef AppVersion
+#define AppVersion "0.2.32"
+#endif
+#ifndef AppVersionCode
+#define AppVersionCode "32"
+#endif
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"
 
