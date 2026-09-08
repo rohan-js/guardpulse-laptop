@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -172,6 +172,33 @@ public partial class LockWindow : Window
     /// every entry is restored-or-dead, so nothing must survive the unlock.</summary>
     public void ClearMinimized()
     {
+        _minimizedByPid.Clear();
+    }
+
+    /// <summary>Uncloaks and restores EVERY minimized blocked app (used on unlock while
+    /// the wall was in HoldDesktop, where CurrentAppKey is empty and per-key restore
+    /// would leave the blocked app cloaked and invisible).</summary>
+    public void RestoreAllMinimized()
+    {
+        if (_minimizedByPid.Count == 0) return;
+        foreach (var pid in _minimizedByPid.Keys.ToList())
+        {
+            try
+            {
+                using var proc = System.Diagnostics.Process.GetProcessById(pid);
+                var hwnd = proc.MainWindowHandle;
+                if (hwnd != IntPtr.Zero)
+                {
+                    ShowWindow(hwnd, SwRestore);
+                    CloakWindow(hwnd, cloak: false);
+                }
+            }
+            catch
+            {
+                // pid gone: nothing to restore
+            }
+        }
+
         _minimizedByPid.Clear();
     }
 
@@ -551,7 +578,10 @@ public partial class LockWindow : Window
 
     public void CloseBlockedApp(string appKey)
     {
-        if (string.IsNullOrEmpty(appKey)) { HideLock(); return; }
+        // Empty key (HoldDesktop cleared it after an app switch) means we cannot
+        // verify any process exit: treat as still-alive and keep the wall up.
+        // Hiding here was a protection bypass (Alt+F4 during HoldDesktop).
+        if (string.IsNullOrEmpty(appKey)) { Reassert(); return; }
         try
         {
             var matchedPids = new List<int>();
@@ -638,7 +668,12 @@ public partial class LockWindow : Window
             ClearMinimized();
             HideLock();
         }
-        catch { HideLock(); }
+        catch
+        {
+            // Verification path itself failed: keep the wall up (fail closed) —
+            // hiding here was an Alt+F4 bypass when no process could be matched.
+            Reassert();
+        }
     }
 
     private void LoadAppIcon(string appKey)

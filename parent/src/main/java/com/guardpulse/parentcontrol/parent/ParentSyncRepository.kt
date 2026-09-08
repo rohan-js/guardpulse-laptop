@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import android.os.Handler
 import android.os.Looper
@@ -142,7 +142,14 @@ class ParentSyncRepository(private val database: DatabaseReference) {
     }
 
     fun clearPairRequestObserver() {
-        pairingRegistration?.remove()
+        // Multi-slot support: a no-arg clear must remove EVERY registration,
+        // not just the most recent alias — the rest would leak listeners and
+        // keep pushing stale setState callbacks.
+        pairingRegistrations.values.forEach { it.remove() }
+        pairingRegistrations.clear()
+        pairingCallbacks.clear()
+        pairingErrorCallbacks.clear()
+        pairingExpiryMs.clear()
         pairingRegistration = null
     }
 

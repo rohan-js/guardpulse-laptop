@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 
 namespace GuardPulse.Agent.Session;
@@ -192,14 +192,16 @@ internal sealed class PolicyCache
             return null; // Safe Mode suspends all locking, offline included
         }
 
-        if (DeviceLocked)
-        {
-            return "budget"; // whole-device lock, enforced offline
-        }
-
+        // Schedule checked BEFORE the whole-device flag: deviceLocked covers both
+        // budget and out-of-hours, and the offline wall must show the right reason.
         if (ScheduleEnabled && IsOutsideSchedule(DateTime.Now, ScheduleStartMinute, ScheduleEndMinute))
         {
             return "schedule";
+        }
+
+        if (DeviceLocked)
+        {
+            return "budget"; // whole-device lock (budget), enforced offline
         }
 
         if (AllowlistEnabled && !AllowlistApps.Contains(appKey))
@@ -243,7 +245,13 @@ internal sealed class PolicyCache
     private static bool IsOutsideSchedule(DateTime localNow, int startMinute, int endMinute)
     {
         var now = localNow.Hour * 60 + localNow.Minute;
-        if (endMinute <= startMinute)
+        // start==end means "never allowed" (locked all day) — mirrors the engine.
+        if (startMinute == endMinute)
+        {
+            return true;
+        }
+
+        if (endMinute < startMinute)
         {
             // Overnight window (e.g. 22:00-06:00): outside is the daytime gap.
             return now >= endMinute && now < startMinute;

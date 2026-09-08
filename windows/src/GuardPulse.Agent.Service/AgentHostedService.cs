@@ -1131,7 +1131,7 @@ var minutes = ms / 60_000L;
                 },
                 ["deviceLocked"] = deviceLocked
             };
-            TryWriteText(Path.Combine(_stateDir, "policy-cache.json"), payload.ToJsonString(JsonOpts));
+            AtomicFile.WriteAllText(Path.Combine(_stateDir, "policy-cache.json"), payload.ToJsonString(JsonOpts));
 
             // The cache must stay readable by the session agent even where ProgramData
             // inheritance is stricter than default; grant once per service run.
@@ -2665,9 +2665,9 @@ var minutes = ms / 60_000L;
             _browserUploadPending = true; // the roll-up tick flushes within 15s
         }
 
-        // Blocked-site reaction: a URL change (including SPA pushState jumps, which the
-        // watcher reports via the omnibox) is acted on immediately — the offending TAB
-        // gets navigated to the block page; the browser itself is never locked.
+        // Blocked-site tracking: the watcher reports the active tab (including SPA
+        // pushState jumps); the SESSION agent performs UIA tab-close enforcement from
+        // these rules — this handler only uploads/persists the reporting state.
     }
 
     private async Task BrowserRollupTickAsync()

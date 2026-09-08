@@ -294,9 +294,28 @@ public sealed class SessionUsageTracker
 
             foreach (var (appKey, state) in payload.Apps)
             {
-                if (string.IsNullOrWhiteSpace(appKey) || state is null || state.DayKey != this.currentDayKey)
+                if (string.IsNullOrWhiteSpace(appKey) || state is null)
                 {
-                    continue; // missing or foreign-day entry: dropped (fresh session)
+                    continue; // missing entry: dropped
+                }
+
+                if (state.DayKey != this.currentDayKey)
+                {
+                    // Foreign-day entry: usage counters reset (fresh session) — but the
+                    // STICKY LOCK survives. A day boundary or restart must never clear a
+                    // session lock; only Reset (parent approval / PIN / Reset-Today) does.
+                    if (state.SessionLocked)
+                    {
+                        this.apps[appKey] = new AppState
+                        {
+                            MsToday = 0,
+                            DayKey = this.currentDayKey,
+                            LastTickMs = 0,
+                            SessionLocked = true,
+                        };
+                    }
+
+                    continue;
                 }
 
                 this.apps[appKey] = new AppState

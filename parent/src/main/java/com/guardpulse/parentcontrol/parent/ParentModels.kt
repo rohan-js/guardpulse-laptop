@@ -1,4 +1,4 @@
-package com.guardpulse.parentcontrol.parent
+﻿package com.guardpulse.parentcontrol.parent
 
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import com.guardpulse.parentcontrol.shared.ControlSnapshotV2
@@ -277,5 +277,6 @@ internal fun ParentSyncUiState.isAppPolicyPending(packageName: String): Boolean 
         desired.safeMode != confirmed.safeMode ||
         desired.budget?.dailyLimitMinutes != confirmed.budget?.dailyLimitMinutes ||
         desired.allowlist?.enabled != confirmed.allowlist?.enabled ||
-        desired.customBlockedDomains?.domains != confirmed.customBlockedDomains?.domains
+        desired.customBlockedDomains?.domains != confirmed.customBlockedDomains?.domains ||
+        desired.schedule != confirmed.schedule
 }

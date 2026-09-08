@@ -16,6 +16,9 @@ public partial class App : Application
     private TrayHost? _tray;
     private LockWindow? _lockWindow;
     private readonly HashSet<string> _knownLockedApps = new(StringComparer.OrdinalIgnoreCase);
+    // Most recent app the SERVICE locked (survives HoldDesktop, where the wall's
+    // display key is empty). Unlock restores/removes THIS key.
+    private string? _lastLockedAppKey;
     private long _suppressLockUntilTick;
 
     // Pin state from the service; remembered so a lazily created LockWindow gets the
@@ -278,12 +281,21 @@ public partial class App : Application
                     var lockKey = message.TryGetProperty("appKey", out var lk) ? lk.GetString() ?? "" : "";
                     var label = message.TryGetProperty("appLabel", out var lb) ? lb.GetString() ?? "" : "";
                     var reason = message.TryGetProperty("reason", out var rs) ? rs.GetString() : null;
-                    if (!string.IsNullOrEmpty(lockKey)) _knownLockedApps.Add(lockKey);
-                    if (!string.IsNullOrEmpty(lockKey)) EnsureLockWindow().ShowFor(lockKey, label, reason);
+                    if (!string.IsNullOrEmpty(lockKey))
+                    {
+                        _knownLockedApps.Add(lockKey);
+                        _lastLockedAppKey = lockKey;
+                        EnsureLockWindow().ShowFor(lockKey, label, reason);
+                    }
                     break;
                 case "unlock":
-                    var unlockedKey = _lockWindow?.CurrentAppKey;
+                    // HoldDesktop empties CurrentAppKey after an app switch — use the
+                    // last SERVICE-locked key so the blocked app is actually restored
+                    // and removed; otherwise it stays cloaked/invisible (ghost wall).
+                    var unlockedKey = _lockWindow?.CurrentAppKey ?? _lastLockedAppKey;
+                    _lastLockedAppKey = null;
                     _lockWindow?.HideLock();
+                    _lockWindow?.RestoreAllMinimized();
                     if (!string.IsNullOrEmpty(unlockedKey))
                     {
                         _knownLockedApps.Remove(unlockedKey);

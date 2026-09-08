@@ -64,7 +64,9 @@ public sealed class BrowserWatcher : IDisposable
     private long _lastSentAtMs;
     private nint _lastBrowserHwnd;
     private TabRules _tabRules = new();
-    private string? _lastClosedUrl;
+    // Per-(window,url) close-attempt guards: a failed close clears its guard so the
+    // next scan retries; a vanished window/URL clears it too.
+    private readonly HashSet<(nint hwnd, string url)> _closeAttempted = new();
     // Guard-reset tracking: the single-URL _lastClosedUrl guard must reset when
     // the URL is absent from the scan or the tab set changes, otherwise a tab
     // that reopened (or a sibling window's identical URL) would never be
@@ -243,7 +245,14 @@ public sealed class BrowserWatcher : IDisposable
         }
         finally
         {
-            _scanGate.Release();
+            try
+            {
+                _scanGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose raced an in-flight scan; the scan result is discarded anyway
+            }
         }
     }
 
@@ -287,23 +296,27 @@ public sealed class BrowserWatcher : IDisposable
 
         // Fall back to a fresh enumeration when nothing is tracked yet (service
         // restart, first launch after install) so enforcement starts immediately.
-        if (windows.Count == 0)
+        if (windows.Count == 0 || _recentBrowserHwnds.Count < MaxTrackedBrowserWindows)
         {
-            windows = EnumerateBrowserWindows();
+            // Keep the tracked set fresh every scan: new browser windows must be
+            // enforced without waiting for the child to focus them once.
+            var discovered = EnumerateBrowserWindows();
             lock (_stateGate)
             {
-                foreach (var hwnd in windows)
+                foreach (var hwnd in discovered)
                 {
-                    if (!_recentBrowserHwnds.Contains(hwnd))
+                    if (_recentBrowserHwnds.Contains(hwnd)) continue;
+                    _recentBrowserHwnds.Insert(0, hwnd);
+                    if (_recentBrowserHwnds.Count > MaxTrackedBrowserWindows)
                     {
-                        _recentBrowserHwnds.Insert(0, hwnd);
+                        _recentBrowserHwnds.RemoveAt(_recentBrowserHwnds.Count - 1);
                     }
                 }
+            }
 
-                while (_recentBrowserHwnds.Count > MaxTrackedBrowserWindows)
-                {
-                    _recentBrowserHwnds.RemoveAt(_recentBrowserHwnds.Count - 1);
-                }
+            lock (_stateGate)
+            {
+                windows = _recentBrowserHwnds.ToList();
             }
         }
 
@@ -345,8 +358,8 @@ public sealed class BrowserWatcher : IDisposable
             var match = _tabRules.Match(url);
             if (match is null) continue;
 
-            // Tab-set change detection: track tab-count + active URL per window;
-            // any change clears the single-URL guard so enforcement re-fires.
+            // Tab-set change detection: track tab-count + active URL per window; any
+            // change clears that window's close-attempt guard so enforcement re-fires.
             var tabCount = snapshot.TabCount;
             lock (_guardGate)
             {
@@ -354,43 +367,54 @@ public sealed class BrowserWatcher : IDisposable
                     || prev.TabCount != tabCount
                     || !string.Equals(prev.ActiveUrl, url, StringComparison.Ordinal);
                 _lastTabState[hwnd] = (tabCount, url);
-                if (changed) _lastClosedUrl = null;
+                if (changed) _closeAttempted.Remove((hwnd, url));
             }
 
-            if (_lastClosedUrl is not null && string.Equals(_lastClosedUrl, url, StringComparison.Ordinal))
+            lock (_guardGate)
             {
-                continue; // close already attempted for this exact URL this cycle
+                if (_closeAttempted.Contains((hwnd, url)))
+                {
+                    continue; // close already dispatched for this window+URL
+                }
+
+                _closeAttempted.Add((hwnd, url));
             }
 
-            lock (_guardGate) _lastClosedUrl = url;
             var capturedUrl = url;
             _ = Task.Run(() =>
             {
                 try
                 {
-                    if (!TabEnforcer.CloseSelectedTab(hwnd)) return;
+                    if (!TabEnforcer.CloseSelectedTab(hwnd))
+                    {
+                        // Close failed (localized strip, no button found...): clear the
+                        // guard so the next scan retries instead of stalling forever.
+                        lock (_guardGate) _closeAttempted.Remove((hwnd, capturedUrl));
+                        return;
+                    }
+
                     _pipe.SendTabClosed(capturedUrl);
                     BlockedTabClosed?.Invoke(capturedUrl);
                 }
                 catch
                 {
-                    // window/tab vanished mid-close; the next scan re-evaluates
+                    lock (_guardGate) _closeAttempted.Remove((hwnd, capturedUrl));
                 }
             });
         }
 
-        // The guarded URL vanished from every window (tab closed/navigated away):
-        // reset the guard so the same URL enforces again if it reopens.
+        // Drop guards for windows that are gone entirely, and for URLs no longer
+        // present anywhere (tab closed or navigated away) so the same URL
+        // enforces again if it reopens.
         lock (_guardGate)
         {
-            if (_lastClosedUrl is not null && !seenUrls.Contains(_lastClosedUrl))
-            {
-                _lastClosedUrl = null;
-            }
-
-            // Drop per-window state for windows that are gone entirely.
             var gone = _lastTabState.Keys.Where(h => !windows.Contains(h)).ToList();
             foreach (var h in gone) _lastTabState.Remove(h);
+
+            var liveUrls = seenUrls;
+            _closeAttempted.RemoveWhere(k => !liveUrls.Contains(k.url));
+            var liveWindows = windows.ToHashSet();
+            _closeAttempted.RemoveWhere(k => !liveWindows.Contains(k.hwnd));
         }
     }
 
@@ -699,8 +723,6 @@ public sealed class BrowserWatcher : IDisposable
         var now = Environment.TickCount64;
         lock (_stateGate)
         {
-            var urlChanged = _lastSent != null
-                && !string.Equals(_lastSent.ActiveUrl, snapshot.ActiveUrl, StringComparison.Ordinal);
             var changed = _lastSent is null || !SameSnapshot(_lastSent, snapshot);
             var heartbeat = now - _lastSentAtMs >= HeartbeatMs;
             if (!changed)
