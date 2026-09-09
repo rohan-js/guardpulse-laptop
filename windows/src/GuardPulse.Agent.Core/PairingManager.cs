@@ -109,6 +109,12 @@ public sealed class PairingManager
 
         // Rotation-boundary grace: the request may carry the generation that was
         // current when the user scanned the QR a minute before a rotation.
+        // The grace window is 2x TTL: the previous generation was the CURRENT one
+        // for a full TTL (10 min), and a request created any time in that window can
+        // reach the agent up to another TTL later, so prev stays acceptable until
+        // prevCreatedAt + 20 min. A 1x-TTL window here would expire the instant the
+        // generation becomes prev (rotation happens exactly at prevCreatedAt + TTL)
+        // — a zero-width grace that caused permanent-looking "pairing expired" loops.
         string? prevSecret;
         string? prevCode;
         long? prevCreatedAt;
@@ -119,7 +125,7 @@ public sealed class PairingManager
             prevCreatedAt = ParseLong(_secrets.Get(PrevCreatedAtKey));
         }
 
-        if (prevCreatedAt is null || nowMs - prevCreatedAt.Value > PolicyConstants.PAIRING_TTL_MS)
+        if (prevCreatedAt is null || nowMs - prevCreatedAt.Value > 2 * PolicyConstants.PAIRING_TTL_MS)
         {
             return false;
         }

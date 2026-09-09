@@ -112,7 +112,7 @@ begin
   // (/VERYSILENT) and a click-through wizard both produce a working agent-config.
   // The API key comes from the build-time define (gitignored firebase-local.iss).
   FirebasePage.Values[0] := '{#FirebaseApiKey}';
-  FirebasePage.Values[1] := 'guardpulse-laptop-control';
+  FirebasePage.Values[1] := 'guardpulse-laptop-sg';
   FirebasePage.Values[2] := 'https://guardpulse-laptop-sg-default-rtdb.asia-southeast1.firebasedatabase.app';
 end;
 
