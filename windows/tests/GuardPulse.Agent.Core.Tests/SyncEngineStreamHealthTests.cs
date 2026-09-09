@@ -35,7 +35,7 @@ public sealed class SyncEngineStreamHealthTests
     {
         var (engine, _, time) = Harness();
         engine.NoteStreamActivity(ControlPath);
-        time.Advance(TimeSpan.FromSeconds(76)); // beyond the 75s alive window
+        time.Advance(TimeSpan.FromSeconds(76)); // beyond the 50s alive window
         Assert.False(engine.IsStreamConnected);
     }
 

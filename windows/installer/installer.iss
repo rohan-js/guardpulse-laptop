@@ -60,10 +60,9 @@ Source: "agent-config.template.json"; DestDir: "{app}"; Flags: ignoreversion
 [UninstallDelete]
 ; Removes runtime-created files (agent-config.json, local logs) on uninstall.
 Type: filesandordirs; Name: "{app}"
-; Removes the stale pre-0.2.1 install that lived under the 64-bit Program Files
-; (an early install.ps1-era path). Its HKCU Run entry is deleted in code below;
-; leaving this folder behind let a duplicate session start at every logon and
-; crash on the single-instance mutex.
+; Removes stale install trees from the OTHER Program Files variant (the x86 vs
+; native split — see RemoveStaleInstall); {app} itself is removed above.
+Type: filesandordirs; Name: "{commonpf}\Device Service"
 Type: filesandordirs; Name: "{commonpf64}\Device Service"
 ; Stale dashboard shortcuts from pre-0.2.13 installs (the local web dashboard is
 ; removed; nothing creates these anymore — this only cleans them up).
@@ -117,6 +116,8 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ProjectId, DatabaseUrl: string;
 begin
   Result := True;
   if CurPageID = FirebasePage.ID then
@@ -124,6 +125,33 @@ begin
     if Length(Trim(FirebasePage.Values[0])) = 0 then
     begin
       MsgBox('API Key is required.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    // Coherence guard: the database URL's first hostname label must be the
+    // project id. A mismatched triple (e.g. a US-project key with a Singapore
+    // URL) parses fine and then fails EVERY cloud write silently — reject it
+    // at install time instead.
+    ProjectId := Trim(FirebasePage.Values[1]);
+    DatabaseUrl := Trim(FirebasePage.Values[2]);
+    if (Length(ProjectId) = 0) or (Length(DatabaseUrl) = 0) then
+    begin
+      MsgBox('Project ID and Database URL are required.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if Pos('https://', LowerCase(DatabaseUrl)) <> 1 then
+    begin
+      MsgBox('Database URL must start with https://', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    // Regional RTDB instances use "<projectId>-default-rtdb.<region>...", so
+    // accept both "." and "-" right after the project id.
+    if (Pos(ProjectId + '.', DatabaseUrl) = 0) and (Pos(ProjectId + '-', DatabaseUrl) = 0) then
+    begin
+      MsgBox(Format('The Database URL does not belong to project "%s". Its host must start with the project id (e.g. https://%s-default-rtdb...).', [ProjectId, ProjectId]), mbError, MB_OK);
       Result := False;
     end;
   end;
@@ -203,12 +231,21 @@ procedure RemoveStaleInstall;
 var
   StaleDir: string;
 begin
-  // Pre-0.2.1 installs lived under the 64-bit Program Files (install.ps1-era) and
-  // were started at logon by an HKCU Run entry. That duplicate session hits the
-  // single-instance mutex and crashes on every logon; remove both on (re)install.
-  StaleDir := ExpandConstant('{commonpf64}\Device Service');
-  if DirExists(StaleDir) then
+  // Stale install trees from a DIFFERENT directory than {app}: older installers
+  // resolved {autopf} to the x86 Program Files, newer ones (Inno >= 6.3) to the
+  // native one. An orphaned tree keeps runnable exes plus an old (possibly
+  // poisoned) agent-config.json — exactly the split that produced a silently
+  // dead service. Probe both Program Files variants and delete whichever does
+  // not match {app}.
+  StaleDir := ExpandConstant('{commonpf}\Device Service');
+  if (UpperCase(StaleDir) <> UpperCase(ExpandConstant('{app}'))) and DirExists(StaleDir) then
     DelTree(StaleDir, True, True, True);
+  StaleDir := ExpandConstant('{commonpf64}\Device Service');
+  if (UpperCase(StaleDir) <> UpperCase(ExpandConstant('{app}'))) and DirExists(StaleDir) then
+    DelTree(StaleDir, True, True, True);
+
+  // Pre-0.2.1 installs were started at logon by an HKCU Run entry; remove it
+  // (a duplicate session hits the single-instance mutex and crashes at logon).
   RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'DeviceServiceAgent');
 end;
 
@@ -276,6 +313,10 @@ begin
   // Lock ledger files SYSTEM/Admin only (one file per call - multi-file fails err87)
   if FileExists(StateRoot + '\secrets.bin') then
     Exec(Icacls, Format('"%s\secrets.bin" /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)"', [StateRoot]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // The DPAPI machine-scope mirror carries the same plaintext as secrets.bin
+  // and is decryptable by any local account — lock it identically.
+  if FileExists(StateRoot + '\secrets.bin.mirror') then
+    Exec(Icacls, Format('"%s\secrets.bin.mirror" /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)"', [StateRoot]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if FileExists(StateRoot + '\enforcement-state.json') then
     Exec(Icacls, Format('"%s\enforcement-state.json" /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)"', [StateRoot]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   LockLedgerPattern(StateRoot, Icacls, 'usage-*.json');
@@ -536,7 +577,9 @@ begin
       // [Registry] uninsdeletevalue only cleans that view. The legacy install.ps1
       // value lives in the native 64-bit view — delete it with the native reg.exe
       // (from {sysnative} which points to the 64-bit System32 when called from a
-      // 32-bit process).
+      // 32-bit process). The WOW6432Node view is cleaned by this uninstaller's
+      // own uninsdeletevalue flag; a 64-bit-innocent belt-and-braces delete of
+      // the native view covers installs made by the old install.ps1.
       Exec(ExpandConstant('{sysnative}\reg.exe'),
         'delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v DeviceServiceAgent /f',
         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -549,6 +592,41 @@ begin
       // Leftover hidden-uninstaller folder (its exe is pending self-delete;
       // DelTree silently skips anything still locked).
       DelTree(ExpandConstant('{commonappdata}\GuardPulse\Laptop\sys'), True, True, True);
+
+      // Browser policy keys the agent writes while running (URLBlocklist +
+      // forced DoH-off). Without this the browsers stay blocked forever after
+      // uninstall, with no agent left to lift the block. Only owned values and
+      // subkeys are removed — the parent policy keys may hold unrelated
+      // admin-tooling entries.
+      RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Google\Chrome\URLBlocklist');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Google\Chrome', 'DnsOverHttpsMode');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Google\Chrome', 'DnsOverHttpsTemplates');
+      RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Microsoft\Edge\URLBlocklist');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Microsoft\Edge', 'DnsOverHttpsMode');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Microsoft\Edge', 'DnsOverHttpsTemplates');
+      RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\BraveSoftware\Brave\URLBlocklist');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\BraveSoftware\Brave', 'DnsOverHttpsMode');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\BraveSoftware\Brave', 'DnsOverHttpsTemplates');
+      RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Mozilla\Firefox\WebsiteFilter');
+      RegDeleteValue(HKEY_LOCAL_MACHINE,
+        'SOFTWARE\Policies\Mozilla\Firefox', 'DNSOverHTTPS');
+
+      // Hosts-file GuardPulse content-filter block: strip the marked section so
+      // blocked sites resolve again (Inno has no in-place file editing, so the
+      // rewrite runs through PowerShell). Result ignored: no block = nothing to do.
+      Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+        '-NoProfile -Command "$p=''C:\Windows\System32\drivers\etc\hosts''; $c=Get-Content $p -Raw -ErrorAction SilentlyContinue; $m=''# END GUARDPULSE CONTENT FILTER''; $b=$c.IndexOf(''# BEGIN GUARDPULSE''); $e=$c.IndexOf($m); if(($null -ne $c) -and ($b -ge 0) -and ($e -ge 0)){Set-Content -Path $p -Value $c.Remove($b,($e+$m.Length)-$b) -Encoding ASCII -Force; ipconfig /flushdns | Out-Null}"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;

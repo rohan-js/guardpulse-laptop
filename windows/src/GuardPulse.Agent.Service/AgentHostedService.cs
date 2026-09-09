@@ -50,6 +50,8 @@ public sealed partial class AgentHostedService(
     private static readonly TimeSpan MessageRetention = TimeSpan.FromDays(1);
     // Field caps matching the RTDB rules; oversized values are silently rejected.
     private const int ActivityLabelMax = 160;
+    private const int ActivityUrlMax = 2048;
+    private const int AppKeyMax = 300;
     private const int BrowserNameMax = 100;
     private const int BrowserTabMax = 300;
     private const int BrowserUrlMax = 2048;
@@ -168,6 +170,10 @@ public sealed partial class AgentHostedService(
             if (_syncEngine.LastValidSnapshot != null)
             {
                 ApplyContentFilterHosts(_syncEngine.LastValidSnapshot);
+                // Refresh the offline fail-closed cache from the restored snapshot
+                // too: without this the session agent reads the PREVIOUS run's
+                // cache during the whole boot window (usage counts move daily).
+                WritePolicyCache(_syncEngine.LastValidSnapshot);
             }
 
 
@@ -216,20 +222,20 @@ public sealed partial class AgentHostedService(
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Device service orchestrator stopping");
+
+        // 0. Cancel the loops/streams FIRST so no in-flight write races the final
+        // offline heartbeat (a completing online:true PATCH could otherwise
+        // overwrite the offline marker and keep the phone showing this laptop
+        // online for a full staleness window).
         try
         {
-            // Offline presence: the phone must not show this laptop online for the
-            // next staleness window after a graceful shutdown.
-            if (_firebase is not null && !string.IsNullOrEmpty(_deviceId))
-            {
-                var offline = new JsonObject { ["online"] = false, ["lastSeen"] = Sv() };
-                await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId),
-                    offline.ToJsonString(JsonOpts), CancellationToken.None);
-            }
+            _unlockStream?.Dispose();
+            _pairStream?.Dispose();
+            _messageStream?.Dispose();
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogDebug(ex, "Offline heartbeat write during stop failed");
+            // already disposed
         }
 
         try
@@ -246,15 +252,6 @@ public sealed partial class AgentHostedService(
 
         try
         {
-            _suspender?.ResumeAll();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "ResumeAll during stop failed");
-        }
-
-        try
-        {
             _watchdog?.Dispose();
         }
         catch
@@ -264,11 +261,41 @@ public sealed partial class AgentHostedService(
 
         try
         {
+            // Stop the pipe BEFORE resuming: a resumed desktop must not still be
+            // covered by the session agent's overlay.
             _pipeHost?.Stop();
         }
         catch
         {
             // ignore shutdown races
+        }
+
+        try
+        {
+            _suspender?.ResumeAll();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ResumeAll during stop failed");
+        }
+
+        try
+        {
+            // Offline presence: the phone must not show this laptop online for the
+            // next staleness window after a graceful shutdown. Bounded to 5s so a
+            // hung network cannot eat the whole SCM stop budget.
+            if (_firebase is not null && !string.IsNullOrEmpty(_deviceId))
+            {
+                var offline = new JsonObject { ["online"] = false, ["lastSeen"] = Sv() };
+                using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                bounded.CancelAfter(TimeSpan.FromSeconds(5));
+                await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId),
+                    offline.ToJsonString(JsonOpts), bounded.Token);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Offline heartbeat write during stop failed");
         }
 
         await base.StopAsync(cancellationToken);
@@ -287,11 +314,44 @@ public sealed partial class AgentHostedService(
     private const string SidSystem = "*S-1-5-18";
     private const string SidAdmins = "*S-1-5-32-544";
 
+    /// <summary>
+    /// AtomicFile/GUID temp files orphaned by a crash between flush and move
+    /// would otherwise accumulate forever (ProgramData showed weeks-old *.tmp
+    /// activity logs). Anything older than a day is not part of any in-flight
+    /// write from THIS process (we just started) and is deleted.
+    /// </summary>
+    private void SweepOrphanedTempFiles()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+            foreach (var file in Directory.EnumerateFiles(_stateDir, "*.tmp"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(file) < cutoff)
+                    {
+                        File.Delete(file);
+                    }
+                }
+                catch
+                {
+                    // locked or already gone: leave it for the next sweep
+                }
+            }
+        }
+        catch
+        {
+            // best-effort hygiene
+        }
+    }
+
     private void SetupStateDirectory()
     {
         _stateDir = StatePaths.Root;
         Directory.CreateDirectory(_stateDir);
         Directory.CreateDirectory(StatePaths.LogsDirectory);
+        SweepOrphanedTempFiles();
         if (_aclApplied)
         {
             return;
@@ -313,6 +373,11 @@ public sealed partial class AgentHostedService(
             var targets = new List<string>
             {
                 Path.Combine(_stateDir, "secrets.bin"),
+                // The crash-recovery mirror carries the SAME plaintext (refresh
+                // token, pairing secret) as secrets.bin but is machine-scope
+                // DPAPI — decryptable by ANY local account. It must be locked
+                // exactly as hard as the primary store.
+                Path.Combine(_stateDir, "secrets.bin.mirror"),
                 Path.Combine(_stateDir, "enforcement-state.json")
             };
             foreach (var pattern in new[] { "usage-*.json", "offsets-*.json", "blocks-*.json" })
@@ -612,344 +677,6 @@ public sealed partial class AgentHostedService(
                 $"System clock jumped backwards by {jumpMs / 1000}s while usage was being tracked; usage preserved via monotonic clock."));
     }
 
-
-    /// <summary>Builds the controlState DTO shared by the local (this-laptop) and remote (parent
-    /// console) views. <paramref name="thisDevice"/> controls whether the local app inventory and
-    /// per-app ledger usage are included (only meaningful for this laptop).</summary>
-
-    /// <summary>Serializes just the state DTO (no envelope) — the device-state cache stores
-    /// this shape so a cached hit can be re-wrapped with the caller's fresh req id.</summary>
-
-    /// <summary>
-    /// One inventoried app for the console merge. Key is the base64url package key;
-    /// Blockable/ProtectedReason come from the device's own inventory upload.
-    /// </summary>
-
-    private List<object?> BuildModesList(ControlSnapshotV2? snapshot, out string? activeId, out string? activeName)
-    {
-        activeId = snapshot?.ActiveMode?.ModeId;
-        activeName = null;
-        var modes = new List<object?>();
-        if (snapshot?.Modes != null)
-        {
-            var byId = new Dictionary<string, ControlMode>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (modeId, mode) in snapshot.Modes)
-            {
-                byId[modeId] = mode;
-                // Full per-mode app rules: the console's mode editor needs the same rows
-                // the phone's Modes card edits (lock switch + per-mode daily limit).
-                var modeApps = new List<object?>();
-                if (mode.Apps != null)
-                {
-                    foreach (var (packageName, rule) in mode.Apps)
-                    {
-                        modeApps.Add(new
-                        {
-                            key = PackageKeys.Encode(packageName),
-                            packageName,
-                            label = LabelFor(packageName),
-                            blocked = rule.ManualBlocked,
-                            dailyLimitMinutes = rule.DailyLimitMinutes,
-                        });
-                    }
-                }
-
-                modes.Add(new
-                {
-                    modeId,
-                    name = mode.Name,
-                    createdAt = mode.CreatedAt,
-                    updatedAt = mode.UpdatedAt,
-                    appCount = mode.Apps?.Count ?? 0,
-                    apps = modeApps,
-                });
-            }
-
-            if (activeId != null && byId.TryGetValue(activeId, out var activeMode))
-            {
-                activeName = activeMode.Name;
-            }
-        }
-
-        return modes;
-    }
-
-    private List<object?> BuildUsageList(ControlSnapshotV2? snapshot)
-    {
-        var usage = new List<object?>();
-        if (snapshot != null)
-        {
-            foreach (var (packageName, rule) in snapshot.EffectiveApps())
-            {
-                var usageMs = _ledger.EffectiveUsageMsToday(packageName);
-                if (usageMs <= 0)
-                {
-                    continue;
-                }
-
-                usage.Add(new
-                {
-                    key = PackageKeys.Encode(packageName),
-                    label = LabelFor(packageName),
-                    minutes = usageMs / 60_000L,
-                    ms = usageMs,
-                    lockBlocked = rule.DailyLimitMinutes is int limit && usageMs >= (long)limit * 60_000L,
-                });
-            }
-        }
-
-        return usage;
-    }
-
-    /// <summary>Parses a device-list node (users/{ownerUid}/devices) into cards for the console.</summary>
-    private List<object?> ParseDeviceList(string? json)
-    {
-        var list = new List<object?>();
-        if (string.IsNullOrWhiteSpace(json) || (json = json!.Trim()) == "null")
-        {
-            return list;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return list;
-            }
-
-            foreach (var p in doc.RootElement.EnumerateObject())
-            {
-                var id = p.Name;
-                var label = id;
-                var online = false;
-                long lastSeen = 0;
-                string? platform = null;
-                string? enforcementMode = null;
-                bool? protectionHealthy = null;
-                if (p.Value.ValueKind == JsonValueKind.Object)
-                {
-                    var v = p.Value;
-                    if (v.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String)
-                    {
-                        label = l.GetString() ?? id;
-                    }
-
-                    online = v.TryGetProperty("online", out var o) && o.ValueKind == JsonValueKind.True;
-                    if (v.TryGetProperty("lastSeen", out var ls) && ls.ValueKind == JsonValueKind.Number)
-                    {
-                        lastSeen = ls.GetInt64();
-                    }
-
-                    if (v.TryGetProperty("platform", out var pl) && pl.ValueKind == JsonValueKind.String)
-                    {
-                        platform = pl.GetString();
-                    }
-
-                    if (v.TryGetProperty("enforcementMode", out var em) && em.ValueKind == JsonValueKind.String)
-                    {
-                        enforcementMode = em.GetString();
-                    }
-
-                    if (v.TryGetProperty("protectionHealthy", out var ph)
-                        && (ph.ValueKind == JsonValueKind.True || ph.ValueKind == JsonValueKind.False))
-                    {
-                        protectionHealthy = ph.GetBoolean();
-                    }
-                }
-
-                list.Add(new { deviceId = id, label, online, lastSeen, platform, enforcementMode, protectionHealthy });
-            }
-        }
-        catch (JsonException)
-        {
-            // best effort: return whatever we managed to parse
-        }
-
-        return list;
-    }
-
-    /// <summary>Parses devices/{id}/state/apps into a usage list (best-effort) for the console.
-    /// labelByPkg supplies the device's own inventory labels; falls back to local labels.</summary>
-    private List<object?> ParseAppsState(string? json, Dictionary<string, string>? labelByPkg = null)
-    {
-        var list = new List<object?>();
-        if (string.IsNullOrWhiteSpace(json) || (json = json!.Trim()) == "null")
-        {
-            return list;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return list;
-            }
-
-            foreach (var p in doc.RootElement.EnumerateObject())
-            {
-                if (p.Value.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var ms = 0L;
-                if (p.Value.TryGetProperty("usageMs", out var um) && um.ValueKind == JsonValueKind.Number)
-                {
-                    ms = um.GetInt64();
-                }
-                else if (p.Value.TryGetProperty("minutes", out var mn) && mn.ValueKind == JsonValueKind.Number)
-                {
-                    ms = mn.GetInt64() * 60_000L;
-                }
-
-var minutes = ms / 60_000L;
-	                // Keep every entry the TV reported: lockBlocked is the TV's ACTUAL
-	                // enforcement state, and the phone uses it instead of the desired rule.
-	                // Label from the entry's own packageName (devices publish it);
-                    // fall back to decoding the packageKey — never render the raw
-                    // base64url key as the label.
-                    var packageName = p.Value.TryGetProperty("packageName", out var pn) && pn.ValueKind == JsonValueKind.String
-                        ? pn.GetString()
-                        : null;
-                    if (string.IsNullOrWhiteSpace(packageName))
-                    {
-                        try
-                        {
-                            packageName = PackageKeys.Decode(p.Name);
-                        }
-                        catch (Exception ex) when (ex is FormatException or ArgumentException)
-                        {
-                            packageName = p.Name;
-                        }
-                    }
-
-                    // Prefer the device's own inventory label for its app.
-                    var label = packageName != null && labelByPkg != null && labelByPkg.TryGetValue(packageName, out var invLabel)
-                        ? invLabel
-                        : LabelFor(packageName);
-
-                    list.Add(new
-                    {
-                        key = p.Name,
-                        label,
-                        minutes,
-                        ms,
-                        // The device writes this when its daily-limit lock trips; the
-                        // console highlights the usage chip red, like the phone.
-                        lockBlocked = p.Value.TryGetProperty("lockBlocked", out var lb) && lb.ValueKind == JsonValueKind.True,
-                    });
-                }
-            }
-            catch (JsonException)
-        {
-            // best effort
-        }
-
-        return list;
-    }
-
-    /// <summary>Parses devices/{id}/unlockRequests into the console's pending-requests list (newest first, capped at 50).</summary>
-    private List<object?> ParsePendingUnlocks(string? json)
-    {
-        var items = new List<(long SortKey, object? Item)>();
-        if (string.IsNullOrWhiteSpace(json) || (json = json!.Trim()) == "null")
-        {
-            return [];
-        }
-
-        var now = _syncEngine.ServerNowMs();
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return [];
-            }
-
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                var r = prop.Value;
-                if (r.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var status = r.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
-                if (!string.Equals(status, PolicyConstants.UNLOCK_PENDING, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                var expiresAt = r.TryGetProperty("expiresAt", out var e) && e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var ex) ? ex : (long?)null;
-                if (expiresAt != null && expiresAt <= now)
-                {
-                    continue; // expired pending requests are not actionable
-                }
-
-                var packageName = r.TryGetProperty("packageName", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : "";
-                var reason = r.TryGetProperty("reason", out var rs) && rs.ValueKind == JsonValueKind.String ? rs.GetString() : null;
-                var createdAt = r.TryGetProperty("createdAt", out var ca) && ca.ValueKind == JsonValueKind.Number && ca.TryGetInt64(out var c) ? c : (long?)null;
-                items.Add((createdAt ?? 0, new
-                {
-                    requestId = prop.Name,
-                    packageName,
-                    label = LabelFor(packageName ?? ""),
-                    reason,
-                    createdAt,
-                    expiresAt,
-                }));
-            }
-        }
-        catch (JsonException)
-        {
-            // best effort
-        }
-
-        return items.OrderByDescending(i => i.SortKey).Take(50).Select(i => i.Item).ToList();
-    }
-
-    /// <summary>Parses devices/{id}/tamperEvents into the console's event list (newest first, capped at 50).</summary>
-    private List<object?> ParseTamperEvents(string? json)
-    {
-        var items = new List<(long SortKey, object? Item)>();
-        if (string.IsNullOrWhiteSpace(json) || (json = json!.Trim()) == "null")
-        {
-            return [];
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return [];
-            }
-
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                var r = prop.Value;
-                if (r.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var type = r.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : "";
-                var message = r.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
-                var createdAt = r.TryGetProperty("createdAt", out var ca) && ca.ValueKind == JsonValueKind.Number && ca.TryGetInt64(out var c) ? c : (long?)null;
-                items.Add((createdAt ?? 0, new { type, message, createdAt }));
-            }
-        }
-        catch (JsonException)
-        {
-            // best effort
-        }
-
-        return items.OrderByDescending(i => i.SortKey).Take(50).Select(i => i.Item).ToList();
-    }
-
-    /// <summary>Parses a device's uploaded inventory (devices/{id}/apps) for the console merge.</summary>
 
     // ----------------------------------------------------------------- control
     private async Task HandleControlAppliedAsync(ControlSnapshotV2 snapshot)
@@ -1543,7 +1270,10 @@ var minutes = ms / 60_000L;
         _activity.CloseCurrent(now);
         if (previous is not null)
         {
-            _unlocks.Clear(previous);
+            // Only untimed (one-visit) grants die on a foreground switch; a timed
+            // grant ("30 minutes of game X") must live to its deadline regardless
+            // of the child alt-tabbing away and back.
+            _unlocks.ClearOneVisit(previous);
         }
 
         _ledger.OnForegroundChanged(appKey, now);
@@ -1714,6 +1444,25 @@ var minutes = ms / 60_000L;
 
     private async Task HandleUnlockJsonAsync(string json)
     {
+        // Single-flight: the unlock SSE stream and the 5s boundary poll race here;
+        // both would otherwise process the same just-approved request twice.
+        if (Interlocked.CompareExchange(ref _unlockRequestsInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await HandleUnlockJsonCoreAsync(json);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _unlockRequestsInFlight, 0);
+        }
+    }
+
+    private async Task HandleUnlockJsonCoreAsync(string json)
+    {
         if (string.IsNullOrWhiteSpace(json) || json.Trim() == "null")
         {
             return;
@@ -1805,8 +1554,14 @@ var minutes = ms / 60_000L;
                 _handledUnlockRequests.Add(requestId);
                 if (_handledUnlockRequests.Count > HandledUnlockRequestsMax)
                 {
-                    // Bound the dedupe set the same way _processedCommands is bounded.
-                    foreach (var stale in _handledUnlockRequests.Take(_handledUnlockRequests.Count - HandledUnlockRequestsMax))
+                    // Materialize BEFORE mutating: HashSet enumeration order is
+                    // arbitrary, and a lazy Take enumerated while removing throws
+                    // InvalidOperationException — which silently swallowed every
+                    // subsequently approved unlock (the id was already added).
+                    // Arbitrary-order eviction is fine: tvApplyStatus/terminal
+                    // status re-guards make reprocessing a no-op.
+                    var excess = _handledUnlockRequests.Count - HandledUnlockRequestsMax;
+                    foreach (var stale in _handledUnlockRequests.Take(excess).ToList())
                     {
                         _handledUnlockRequests.Remove(stale);
                     }
@@ -1863,7 +1618,29 @@ var minutes = ms / 60_000L;
         await HandleCommandsJsonAsync(json);
     }
 
+    // Single-flight: the commands SSE stream and the 5s boundary poll can both
+    // feed the same JSON; the GET-then-PATCH claim inside is not atomic.
+    private int _commandsInFlight;
+    private int _unlockRequestsInFlight;
+
     private async Task HandleCommandsJsonAsync(string json)
+    {
+        if (Interlocked.CompareExchange(ref _commandsInFlight, 1, 0) != 0)
+        {
+            return; // the concurrent run processes the same node
+        }
+
+        try
+        {
+            await HandleCommandsJsonCoreAsync(json);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _commandsInFlight, 0);
+        }
+    }
+
+    private async Task HandleCommandsJsonCoreAsync(string json)
     {
         if (string.IsNullOrWhiteSpace(json) || json.Trim() == "null")
         {
@@ -2162,6 +1939,7 @@ var minutes = ms / 60_000L;
     private async Task RegisterDeviceAsync()
     {
         await _firebase.SignInAsync(_ct);
+        await ProbeDatabaseCoherenceAsync();
         var registrar = new DeviceRegistrar(_firebase, _deviceId);
         await registrar.RegisterAsync(_ct);
         if (!string.IsNullOrEmpty(registrar.OwnerUid))
@@ -2170,6 +1948,32 @@ var minutes = ms / 60_000L;
         }
 
         _logger.LogInformation("Device meta registered for {DeviceId}", _deviceId);
+    }
+
+    /// <summary>
+    /// Discriminates a config/key mismatch from healthy locked-down rules right
+    /// after sign-in: GET &lt;db&gt;/.json returns 401 when the id token belongs to a
+    /// DIFFERENT Firebase project than the database (every later write would 401
+    /// forever — the silent-zombie config incident), while 403 means auth is fine
+    /// and the root is merely rules-denied (expected). Other statuses are healthy.
+    /// </summary>
+    private async Task ProbeDatabaseCoherenceAsync()
+    {
+        try
+        {
+            await _firebase.GetAsync(".info/serverTimeOffset", _ct);
+        }
+        catch (HttpRequestException ex) when ((int)(ex.StatusCode ?? 0) == 401)
+        {
+            _logger.LogCritical(
+                "Firebase rejected the auth token for {Url} (HTTP 401 after successful sign-in): the configured apiKey/projectId do not belong to this database. " +
+                "Every cloud write will fail silently in this state — fix agent-config.json so apiKey, projectId and databaseUrl all belong to the same Firebase project.",
+                _config.DatabaseUrl);
+        }
+        catch (Exception)
+        {
+            // 403 (rules deny root reads) or transient transport noise: healthy or retryable.
+        }
     }
 
     private async Task RecoverOwnerUidAsync()
@@ -2575,6 +2379,12 @@ var minutes = ms / 60_000L;
         var snapshot = _syncEngine.LastValidSnapshot;
         var revisionId = snapshot?.RevisionId;
 
+        // Refresh the offline fail-closed cache FIRST and unconditionally:
+        // exactly when the cloud is unreachable (both PATCHes below throw) the
+        // session agent depends on this file being current — daily-limit and
+        // session-limit state evolve without any snapshot change.
+        WritePolicyCache(snapshot);
+
         // Write per-app states in a single PATCH instead of one REST call per
         // app (one SSE event instead of N on the phone). Only entries whose JSON
         // changed since the last upload are included — an idle device's state is
@@ -2627,9 +2437,6 @@ var minutes = ms / 60_000L;
         // when the per-app diff produced no writes.
         var runtime = new JsonObject { ["lastStateWriteAt"] = Sv() };
         await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), runtime.ToJsonString(JsonOpts), _ct);
-
-        // Daily-limit state evolves without snapshot changes; keep the cache fresh.
-        WritePolicyCache(snapshot);
     }
 
     // ------------------------------------------------------------ browser tab state
@@ -2843,9 +2650,12 @@ var minutes = ms / 60_000L;
         {
             var current = new JsonObject
             {
-                ["runtimeApp"] = appKey,
-                ["appKey"] = appKey,
-                ["appLabel"] = label,
+                ["runtimeApp"] = Truncate(appKey, AppKeyMax),
+                ["appKey"] = Truncate(appKey, AppKeyMax),
+                // The rules cap appLabel at 160; an untruncated label here fails
+                // the PUT BEFORE the history loop runs and would silently freeze
+                // the whole activity pipeline.
+                ["appLabel"] = Truncate(label, ActivityLabelMax),
                 ["appStartedAt"] = startedAtMs,
                 ["overlayState"] = string.IsNullOrEmpty(overlay) ? "none" : overlay,
                 ["mediaAvailable"] = false,
@@ -2858,8 +2668,20 @@ var minutes = ms / 60_000L;
                 FirebasePaths.DeviceActivityCurrent(_deviceId), current.ToJsonString(JsonOpts), _ct);
         }
 
+        // Per-entry failure budget: one rules-invalid entry (oversized url, etc.)
+        // used to abort the whole foreach and poison every later entry forever.
+        var consecutiveFailures = 0;
+        const int MaxConsecutiveFailures = 3;
+
         foreach (var entry in _activity.Pending())
         {
+            if (consecutiveFailures >= MaxConsecutiveFailures)
+            {
+                _logger.LogError("Activity flush aborted after {Count} consecutive failures; {Remaining} entries stay queued",
+                    consecutiveFailures, _activity.Pending().Count());
+                break;
+            }
+
             var node = SerializeRecord(entry);
             if (node is null)
             {
@@ -2876,8 +2698,8 @@ var minutes = ms / 60_000L;
             var endedAt = PickLong(node, "EndedAt", "endedAt", "EndedAtMs", "endedAtMs");
             // Tab sessions arrive with type "tab" (ActivityLog queue); default to app.
             var entryType = PickString(node, "Type", "type", "EntryType", "entryType");
-            var historyAppKey = PickString(node, "AppKey", "appKey", "PackageName", "packageName");
-            var historyAppLabel = PickString(node, "Label", "label", "AppLabel", "appLabel");
+            var historyAppKey = Truncate(PickString(node, "AppKey", "appKey", "PackageName", "packageName"), AppKeyMax);
+            var historyAppLabel = Truncate(PickString(node, "Label", "label", "AppLabel", "appLabel"), ActivityLabelMax);
             if (string.IsNullOrEmpty(historyAppLabel))
             {
                 // RTDB rules reject missing labels; fall back to the package name and
@@ -2890,9 +2712,10 @@ var minutes = ms / 60_000L;
                 ["id"] = id,
                 ["type"] = string.IsNullOrEmpty(entryType) ? "app" : entryType,
                 ["appKey"] = historyAppKey,
-                ["appLabel"] = Truncate(historyAppLabel, ActivityLabelMax),
+                ["appLabel"] = historyAppLabel,
                 ["title"] = Truncate(PickString(node, "Title", "title"), ActivityLabelMax),
-                ["url"] = PickString(node, "Url", "url"),
+                // SPA URLs routinely exceed the rules' 2048 cap — clamp.
+                ["url"] = Truncate(PickString(node, "Url", "url"), ActivityUrlMax),
                 ["subtitle"] = null,
                 ["startedAt"] = startedAt,
                 ["endedAt"] = endedAt,
@@ -2904,9 +2727,22 @@ var minutes = ms / 60_000L;
                 ["updatedAt"] = endedAt
             };
 
-            await _firebase.PutAsync(
-                FirebasePaths.DeviceActivityHistoryItem(_deviceId, id), history.ToJsonString(JsonOpts), _ct);
-            _activity.MarkUploaded(id);
+            try
+            {
+                await _firebase.PutAsync(
+                    FirebasePaths.DeviceActivityHistoryItem(_deviceId, id), history.ToJsonString(JsonOpts), _ct);
+                _activity.MarkUploaded(id);
+                consecutiveFailures = 0;
+            }
+            catch (Exception ex)
+            {
+                consecutiveFailures++;
+                _logger.LogWarning(ex, "Activity history upload failed for {Id} (consecutive: {N})", id, consecutiveFailures);
+                if (consecutiveFailures < MaxConsecutiveFailures)
+                {
+                    break; // transport likely down: retry the batch next flush
+                }
+            }
         }
 
         _activity.PruneBefore(NowMs() - (long)ActivityRetention.TotalMilliseconds);
@@ -2941,28 +2777,40 @@ var minutes = ms / 60_000L;
         try
         {
             var now = _syncEngine.ServerNowMs();
-            var stalePaths = new List<string>();
-            await CollectStaleChildPathsAsync(
-                FirebasePaths.DeviceTamperEvents(_deviceId), TamperEventRetention, now, ["createdAt"], stalePaths);
-            await CollectStaleChildPathsAsync(
-                FirebasePaths.DeviceActivityHistory(_deviceId), ActivityHistoryRetention, now, ["endedAt", "startedAt"], stalePaths);
-            await CollectStaleChildPathsAsync(
-                FirebasePaths.DeviceMessages(_deviceId), MessageRetention, now, ["createdAt"], stalePaths);
-
-            for (var offset = 0; offset < stalePaths.Count; offset += RtdbPruneBatchSize)
+            // One PATCH per node TYPE: a root multi-path update is atomic, so a
+            // single denied path (rules version lag, one stale message) used to
+            // veto the whole batch and permanently kill the retention sweep.
+            foreach (var (label, rootPath, retention, fields) in new (string, string, TimeSpan, string[])[]
+                     {
+                         ("tamperEvents", FirebasePaths.DeviceTamperEvents(_deviceId), TamperEventRetention, ["createdAt"]),
+                         ("activityHistory", FirebasePaths.DeviceActivityHistory(_deviceId), ActivityHistoryRetention, ["endedAt", "startedAt"]),
+                         ("messages", FirebasePaths.DeviceMessages(_deviceId), MessageRetention, ["createdAt"]),
+                     })
             {
-                var batch = new JsonObject();
-                foreach (var stalePath in stalePaths.Skip(offset).Take(RtdbPruneBatchSize))
+                var stalePaths = new List<string>();
+                await CollectStaleChildPathsAsync(rootPath, retention, now, fields, stalePaths);
+                for (var offset = 0; offset < stalePaths.Count; offset += RtdbPruneBatchSize)
                 {
-                    batch[stalePath] = null;
+                    var batch = new JsonObject();
+                    foreach (var stalePath in stalePaths.Skip(offset).Take(RtdbPruneBatchSize))
+                    {
+                        batch[stalePath] = null;
+                    }
+
+                    try
+                    {
+                        await _firebase.PatchAsync("", batch.ToJsonString(JsonOpts), _ct);
+                    }
+                    catch (Exception batchEx) when (batchEx is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(batchEx, "Retention delete failed for {Label} ({Count} paths); other node types unaffected", label, batch.Count);
+                    }
                 }
 
-                await _firebase.PatchAsync("", batch.ToJsonString(JsonOpts), _ct);
-            }
-
-            if (stalePaths.Count > 0)
-            {
-                _logger.LogInformation("RTDB retention sweep deleted {Count} stale nodes", stalePaths.Count);
+                if (stalePaths.Count > 0)
+                {
+                    _logger.LogInformation("RTDB retention sweep deleted {Count} stale {Label} nodes", stalePaths.Count, label);
+                }
             }
         }
         catch (OperationCanceledException) when (_ct.IsCancellationRequested)
@@ -3046,6 +2894,13 @@ var minutes = ms / 60_000L;
         {
             // shutting down
         }
+        catch (OperationCanceledException ex)
+        {
+            // A cancellation with _ct live is a transport TIMEOUT (REST 30s cap /
+            // SSE connect cap), not shutdown — exactly the class that used to look
+            // like per-write noise while the service was a cloud zombie. Surface it.
+            _logger.LogError(ex, "{Name} timed out (operation canceled by timeout, not shutdown)", name);
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "{Name} failed", name);
@@ -3122,13 +2977,19 @@ var minutes = ms / 60_000L;
             foreach (var child in doc.RootElement.EnumerateObject())
             {
                 var messageId = child.Name;
-                if (_handledMessages.Contains(messageId)) continue;
-                if (_handledMessages.Count > HandledMessagesMax)
+                // SSE callback and the 5s poll race here; an unsynchronized
+                // HashSet Add+Clear corrupted state under concurrent access.
+                lock (_dedupeGate)
                 {
-                    _handledMessages.Clear();
+                    if (_handledMessages.Contains(messageId)) continue;
+                    if (_handledMessages.Count > HandledMessagesMax)
+                    {
+                        _handledMessages.Clear();
+                    }
+
+                    _handledMessages.Add(messageId);
                 }
 
-                _handledMessages.Add(messageId);
                 if (child.Value.ValueKind != JsonValueKind.Object) continue;
 
                 var text = GetString(child.Value, "text");
@@ -3202,6 +3063,7 @@ var minutes = ms / 60_000L;
     }
 
     private readonly HashSet<string> _sentWarningToastsToday = new(StringComparer.OrdinalIgnoreCase);
+    private string? _warningToastsDayKey;
 
     private Task BoundaryTickAsync()
     {
@@ -3244,6 +3106,13 @@ var minutes = ms / 60_000L;
         // and could re-toast or skip a day entirely.
         var today = TimeZoneInfo.ConvertTime(_time.GetUtcNow(), _time.LocalTimeZone)
             .ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+        if (!string.Equals(_warningToastsDayKey, today, StringComparison.Ordinal))
+        {
+            // Day rolled: keys embed the date, so stale entries can never match
+            // again — drop them instead of growing the set for the whole uptime.
+            _warningToastsDayKey = today;
+            _sentWarningToastsToday.Clear();
+        }
 
         // 1. App-specific daily limit warning
         string? activeKey;
@@ -3400,7 +3269,9 @@ var minutes = ms / 60_000L;
     {
         try
         {
-            File.WriteAllText(path, contents);
+            // Atomic: block-rules.json is read on demand by the session agent;
+            // a torn write there could parse garbage as the active rules.
+            GuardPulse.Agent.Core.AtomicFile.WriteAllText(path, contents);
         }
         catch
         {
@@ -3580,17 +3451,57 @@ var minutes = ms / 60_000L;
     /// block deadline persist to the state dir, so restarting the machine (a standard
     /// user can do that freely) does not hand back 5 fresh guesses per boot.
     /// </summary>
-    private sealed class PinRetryGate(TimeProvider time, string? persistencePath = null)
+    private sealed class PinRetryGate
     {
         private const int MaxFailures = 5;
         private const long WindowMs = 5 * 60_000L;
         private const long BaseBlockMs = 60_000L;
         private const long MaxBlockMs = 15 * 60_000L;
 
+        private readonly TimeProvider _time;
+        private readonly string? _persistencePath;
         private readonly object _gate = new();
         private readonly Queue<long> _failures = new();
         private long _blockedUntilMs;
         private int _strikeCount;
+
+        // Restore persisted strikes/deadline so a reboot (free to a standard
+        // user) does not hand back fresh guesses — PersistLocked writes them,
+        // so the load here is what makes the "reboot-proof" claim true. Only a
+        // still-future deadline is honored: a stale one from before downtime
+        // must not re-block an innocent boot.
+        public PinRetryGate(TimeProvider time, string? persistencePath = null)
+        {
+            _time = time;
+            _persistencePath = persistencePath;
+            if (persistencePath == null || !File.Exists(persistencePath))
+            {
+                return;
+            }
+
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(persistencePath));
+                var root = doc.RootElement;
+                if (root.TryGetProperty("strikeCount", out var strikes) && strikes.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    _strikeCount = Math.Max(0, strikes.GetInt32());
+                }
+
+                if (root.TryGetProperty("blockedUntilMs", out var blocked) && blocked.ValueKind == System.Text.Json.JsonValueKind.Number)
+                {
+                    var until = blocked.GetInt64();
+                    if (until > Now())
+                    {
+                        _blockedUntilMs = until;
+                    }
+                }
+            }
+            catch
+            {
+                // Corrupt state: start clean rather than bricking the PIN pad.
+            }
+        }
 
         public bool IsBlocked()
         {
@@ -3642,11 +3553,11 @@ var minutes = ms / 60_000L;
             }
         }
 
-        private long Now() => time.GetUtcNow().ToUnixTimeMilliseconds();
+        private long Now() => _time.GetUtcNow().ToUnixTimeMilliseconds();
 
         private void PersistLocked()
         {
-            if (persistencePath == null)
+            if (_persistencePath == null)
             {
                 return;
             }
@@ -3655,7 +3566,7 @@ var minutes = ms / 60_000L;
             {
                 var json = System.Text.Json.JsonSerializer.Serialize(
                     new { strikeCount = _strikeCount, blockedUntilMs = _blockedUntilMs });
-                GuardPulse.Agent.Core.AtomicFile.WriteAllText(persistencePath, json);
+                GuardPulse.Agent.Core.AtomicFile.WriteAllText(_persistencePath, json);
             }
             catch
             {

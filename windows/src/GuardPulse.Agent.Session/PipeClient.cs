@@ -68,6 +68,34 @@ public sealed class PipeClient : IDisposable
         var reader = _outbound.Reader;
         while (!ct.IsCancellationRequested)
         {
+            // Dequeue ONLY while the pipe has a writer: dequeuing while
+            // disconnected consumed-and-dropped every message (a PIN the child
+            // typed during an outage, an askParent), making the reconnect
+            // retention filter in RunAsync dead code.
+            NamedPipeClientStream? stream = null;
+            while (stream is null)
+            {
+                lock (_sendLock)
+                {
+                    if (_writer is not null && _stream?.IsConnected == true)
+                    {
+                        stream = _stream;
+                    }
+                }
+
+                if (stream is null)
+                {
+                    try
+                    {
+                        await Task.Delay(200, ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                }
+            }
+
             QueuedMessage queued;
             try
             {
@@ -82,12 +110,22 @@ public sealed class PipeClient : IDisposable
             {
                 try
                 {
-                    _writer?.WriteLine(queued.Json);
+                    // The writer may have died between the gate check and this
+                    // send: requeue the message instead of consuming it so the
+                    // reconnect retention pass decides its fate.
+                    if (_writer is null)
+                    {
+                        _outbound.Writer.TryWrite(queued);
+                        continue;
+                    }
+
+                    _writer.WriteLine(queued.Json);
                 }
                 catch (Exception)
                 {
-                    // write failed (pipe down / disposing); the reconnect filter in
-                    // RunAsync retains/drops this backlog, so it is not re-queued here
+                    // write failed (pipe down mid-send): requeue; the reconnect
+                    // filter in RunAsync retains/drops this backlog
+                    _outbound.Writer.TryWrite(queued);
                 }
             }
         }

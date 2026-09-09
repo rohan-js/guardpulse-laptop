@@ -1154,3 +1154,134 @@ test("current owner can re-pair own device without unpair command", async () => 
     })
   );
 });
+
+// ---------------------------------------------------------------------------
+// 0.2.35 audit regressions
+
+test("laptop app dual-write shape (packageKey on legacy policy mirror) is valid", async () => {
+  // Real flow: seedControlV2 writes the full control/v2 root first, then
+  // ParentRepository.controlUpdate patches BOTH mirrors in one atomic
+  // updateChildren. Before 0.2.35 the legacy mirror's whitelist rejected
+  // packageKey, which failed the WHOLE multi-path update (every Apps-tab
+  // toggle died).
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/control/v2").set({
+      schemaVersion: 2,
+      revisionId: "seed1",
+      safeMode: { enabled: false, until: 0 },
+      updatedAt: 1,
+      updatedBy: "parentUid",
+    })
+  );
+  const appRow = {
+    packageName: "com.video",
+    packageKey: "Y29tLnZpZGVv",
+    manualBlocked: true,
+    dailyLimitMinutes: 30,
+    updatedAt: 1,
+  };
+  // Real controlUpdate bumps revisionId in the SAME atomic patch (the
+  // control/v2 validate rejects writes that keep the old revisionId).
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1").update({
+      "policy/apps/Y29tLnZpZGVv": appRow,
+      "control/v2/apps/Y29tLnZpZGVv": appRow,
+      "control/v2/revisionId": "rev2",
+      "control/v2/updatedAt": 2,
+    })
+  );
+
+  // A mismatched packageKey is still rejected (both mirrors).
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/policy/apps/Y29tLnZpZGVv").set({
+      packageName: "com.video",
+      packageKey: "wrong",
+      manualBlocked: true,
+      updatedAt: 1,
+    })
+  );
+});
+
+test("laptop mode dual-write shape (packageKey on mode app mirror) is valid", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/policy/modes/mode1").set({
+      modeId: "mode1",
+      name: "Study",
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "parentUid",
+      apps: {
+        Y29tLnZpZGVv: {
+          packageName: "com.video",
+          packageKey: "Y29tLnZpZGVv",
+          manualBlocked: true,
+          updatedAt: 1,
+        },
+      },
+    })
+  );
+});
+
+test("laptop (tvUid) can delete a delivered device message", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/messages/m1").set({
+      messageId: "m1",
+      text: "dinner in 10",
+      createdAt: 1,
+      sentBy: "parentUid",
+    })
+  );
+  // Delete-after-display: the agent deletes once shown. Before 0.2.35 this
+  // write had no tvUid arm and 403'd forever.
+  await assertSucceeds(dbAs("tvUid").ref("devices/tv1/messages/m1").remove());
+});
+
+test("laptop (tvUid) can delete terminal commands but not pending ones", async () => {
+  const base = {
+    type: "rescanApps",
+    packageName: null,
+    requestedBy: "parentUid",
+    createdAt: 1,
+  };
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/commands/c1").set({ ...base, status: "pending" })
+  );
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/commands/c1").update({ status: "running", claimedAt: 2 })
+  );
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/commands/c1").update({ status: "done", completedAt: 3 })
+  );
+  // Terminal cleanup (retention): now allowed for the device.
+  await assertSucceeds(dbAs("tvUid").ref("devices/tv1/commands/c1").remove());
+  // A pending command must NOT be deletable by the device.
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/commands/c2").set({ ...base, status: "pending" })
+  );
+  await assertFails(dbAs("tvUid").ref("devices/tv1/commands/c2").remove());
+});
+
+test("laptop (tvUid) can delete decided unlock requests but not pending ones", async () => {
+  const base = {
+    requestId: "u1",
+    packageName: "com.game",
+    reason: "want to play",
+    status: "pending",
+    createdAt: 1,
+    expiresAt: 999,
+  };
+  // The DEVICE creates unlock requests (Ask Parent flow).
+  await assertSucceeds(dbAs("tvUid").ref("devices/tv1/unlockRequests/u1").set(base));
+  await assertFails(dbAs("tvUid").ref("devices/tv1/unlockRequests/u1").remove());
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/unlockRequests/u1").update({ status: "approved" })
+  );
+  // Applied + terminal: device retention delete now allowed.
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/unlockRequests/u1").update({
+      tvApplyStatus: "applied",
+      tvAppliedAt: 2,
+    })
+  );
+  await assertSucceeds(dbAs("tvUid").ref("devices/tv1/unlockRequests/u1").remove());
+});

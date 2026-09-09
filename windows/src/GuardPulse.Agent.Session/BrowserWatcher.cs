@@ -178,7 +178,20 @@ public sealed class BrowserWatcher : IDisposable
         if (_disposed || !_scanGate.Wait(0)) return; // previous scan still running
         try
         {
-            var scan = await Task.Run(CaptureForeground).ConfigureAwait(true);
+            // UIA against a wedged renderer can block indefinitely; without a
+            // timeout one stuck capture holds _scanGate forever and permanently
+            // kills both snapshots AND tab enforcement until process restart.
+            Task<ScanResult> scanTask = Task.Run(CaptureForeground);
+            ScanResult scan;
+            try
+            {
+                scan = await scanTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(true);
+            }
+            catch (TimeoutException)
+            {
+                return; // treat as "no browser this tick"; the next tick retries
+            }
+
             if (scan.Snapshot is { } snapshot)
             {
                 lock (_stateGate)
@@ -225,7 +238,17 @@ public sealed class BrowserWatcher : IDisposable
                 if (lastHwnd != nint.Zero && !graceSent
                     && Environment.TickCount64 - lostAtMs < GraceAfterFocusLossMs)
                 {
-                    var graceSnap = await Task.Run(() => CaptureBrowserWindow(lastHwnd, lastExe)).ConfigureAwait(true);
+                    BrowserSnapshot? graceSnap;
+                    try
+                    {
+                        graceSnap = await Task.Run(() => CaptureBrowserWindow(lastHwnd, lastExe))
+                            .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(true);
+                    }
+                    catch (TimeoutException)
+                    {
+                        graceSnap = null;
+                    }
+
                     if (graceSnap is not null)
                     {
                         lock (_stateGate) _graceSnapshotSent = true;

@@ -70,7 +70,10 @@ public static class BrowserPolicyManager
             using var ffBase = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Mozilla\Firefox");
             if (ffBase != null)
             {
-                ffBase.SetValue("DNSOverHTTPS", "false", RegistryValueKind.String);
+                // Mozilla's policy schema maps DNSOverHTTPS to a boolean: a REG_SZ "false"
+                // is an invalid-typed policy Firefox silently ignores (DoH kept bypassing
+                // the hosts block). The registry representation of policy booleans is DWORD.
+                ffBase.SetValue("DNSOverHTTPS", 0, RegistryValueKind.DWord);
                 if (patterns.Count == 0)
                 {
                     ffBase.DeleteSubKeyTree("WebsiteFilter", throwOnMissingSubKey: false);

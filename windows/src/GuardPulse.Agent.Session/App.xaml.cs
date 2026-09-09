@@ -15,7 +15,16 @@ public partial class App : Application
     private BrowserWatcher? _browserWatcher;
     private TrayHost? _tray;
     private LockWindow? _lockWindow;
-    private readonly HashSet<string> _knownLockedApps = new(StringComparer.OrdinalIgnoreCase);
+    // Apps the SERVICE explicitly locked (only ever filled by a "lock" pipe
+    // message; only ever cleared by an "unlock" message). While the pipe is
+    // connected this set is the ONLY lock authority — never seed it from the
+    // policy cache: a seeded entry would wall an app the service never locked,
+    // and because the service only broadcasts unlock when IT was locked, that
+    // wall could never be lifted (the "random lock screen" incident).
+    private readonly HashSet<string> _serviceLockedApps = new(StringComparer.OrdinalIgnoreCase);
+    // Offline fail-closed seed (cache blocked lists + bypass tools), consulted
+    // ONLY while the pipe is dead past the grace period.
+    private readonly HashSet<string> _fallbackLockedApps = new(StringComparer.OrdinalIgnoreCase);
     // Most recent app the SERVICE locked (survives HoldDesktop, where the wall's
     // display key is empty). Unlock restores/removes THIS key.
     private string? _lastLockedAppKey;
@@ -48,20 +57,16 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        // Offline-only seed: the fail-closed fallback (pipe dead >5s) locks these
+        // on its own. The connected verdict path NEVER consults this set.
         var initCache = PolicyCache.Load();
         if (initCache is not null)
         {
-            foreach (var b in initCache.BlockedApps) _knownLockedApps.Add(b);
-            foreach (var d in initCache.DailyBlockedApps) _knownLockedApps.Add(d);
-            foreach (var s in initCache.SessionBlockedApps) _knownLockedApps.Add(s);
-            foreach (var b in PolicyCache.BypassAppKeys) _knownLockedApps.Add(b);
+            foreach (var b in initCache.BlockedApps) _fallbackLockedApps.Add(b);
+            foreach (var d in initCache.DailyBlockedApps) _fallbackLockedApps.Add(d);
+            foreach (var s in initCache.SessionBlockedApps) _fallbackLockedApps.Add(s);
         }
-        else
-        {
-            // Unknown policy state (service never wrote a cache): seed only the
-            // bypass tools (fail closed), never an empty allow-everything set.
-            foreach (var b in PolicyCache.BypassAppKeys) _knownLockedApps.Add(b);
-        }
+        foreach (var b in PolicyCache.BypassAppKeys) _fallbackLockedApps.Add(b);
 
         _pipe = new PipeClient();
         _pipe.MessageReceived += OnPipeMessage;
@@ -72,12 +77,11 @@ public partial class App : Application
         // this a restarted session agent runs with empty rules until the next
         // control apply on the service side.
         _pipe.Connected += _onPipeConnectedTabRules;
-        // Keep the locked-app set across reconnects: it lifts ONLY on an
-        // explicit service "unlock" message, never on transport churn. (The
-        // service re-broadcasts the current decision on hello, so a stale entry
-        // is corrected by the next lock/unlock, not by clearing here.)
-        // On Connected the ForegroundHook also forces one fresh foreground
-        // Publish (bypassing its dedupe) so the service re-evaluates instantly.
+        // On (re)connect the service's hello handler immediately re-broadcasts the
+        // current verdict (lock or unlock), so service-sourced state is rebuilt
+        // from authority; clear any stale service-locked keys instead of keeping
+        // them (a kept key would wall an app whose unlock message was missed).
+        _pipe.Connected += () => Dispatcher.Invoke(_serviceLockedApps.Clear);
         _pipe.Start();
 
         _hook = new ForegroundHook(_pipe);
@@ -94,15 +98,15 @@ public partial class App : Application
             if (Environment.TickCount64 < _suppressLockUntilTick) return;
 
             // While the pipe is up the service owns lock verdicts: the wall
-            // follows the service's lock/unlock messages via _knownLockedApps
+            // follows the service's lock/unlock messages via _serviceLockedApps
             // (the sole unlock authority). The offline policy cache drives the
             // wall only while the pipe is dead (fail closed).
             var serviceOwnsVerdict = _pipe?.IsConnected == true;
             string? blockedReason;
             if (serviceOwnsVerdict)
             {
-                blockedReason = _knownLockedApps.Contains(appKey)
-                    || _knownLockedApps.Contains(System.IO.Path.GetFileName(appKey))
+                blockedReason = _serviceLockedApps.Contains(appKey)
+                    || _serviceLockedApps.Contains(System.IO.Path.GetFileName(appKey))
                     ? "manual" : null;
             }
             else
@@ -117,11 +121,15 @@ public partial class App : Application
             var isBlocked = blockedReason != null;
             if (isBlocked)
             {
-                _knownLockedApps.Add(appKey);
+                // Echo the blocked key into the set the unlock path clears so a
+                // service-placed lock and its unlock always round-trip, even when
+                // the wall was re-shown by the offline fallback in between.
+                _serviceLockedApps.Add(appKey);
             }
-            else if (_knownLockedApps.Contains(appKey))
+            else
             {
-                _knownLockedApps.Remove(appKey);
+                _serviceLockedApps.Remove(appKey);
+                _serviceLockedApps.Remove(System.IO.Path.GetFileName(appKey));
             }
 
             if (isBlocked)
@@ -172,8 +180,8 @@ public partial class App : Application
                 // whole virtual desktop); Minimizing the blocked app is still
                 // fine because it does not touch the wall itself.
                 var lockedKey = _lockWindow.CurrentAppKey;
-                var lockedAppSuspended = _knownLockedApps.Contains(lockedKey)
-                    || (!string.IsNullOrEmpty(lockedKey) && _knownLockedApps.Contains(System.IO.Path.GetFileName(lockedKey)));
+                var lockedAppSuspended = _serviceLockedApps.Contains(lockedKey)
+                    || (!string.IsNullOrEmpty(lockedKey) && _serviceLockedApps.Contains(System.IO.Path.GetFileName(lockedKey)));
                 try
                 {
                     Dispatcher.Invoke(() =>
@@ -192,8 +200,7 @@ public partial class App : Application
                             // Previously-named app is no longer service-locked:
                             // stop naming it, but do NOT hide — only "unlock" hides.
                             _lockWindow.HoldDesktop();
-                        }
-                    });
+                        }                    });
                 }
                 catch (Exception)
                 {
@@ -260,7 +267,7 @@ public partial class App : Application
         // only suppress while the service still holds this app locked (known
         // verdict); an unlocked app must re-lock immediately on next signal.
         var key = _lockWindow?.CurrentAppKey;
-        if (!string.IsNullOrEmpty(key) && _knownLockedApps.Contains(key))
+        if (!string.IsNullOrEmpty(key) && _serviceLockedApps.Contains(key))
         {
             _suppressLockUntilTick = Environment.TickCount64 + 60_000;
         }
@@ -283,25 +290,33 @@ public partial class App : Application
                     var reason = message.TryGetProperty("reason", out var rs) ? rs.GetString() : null;
                     if (!string.IsNullOrEmpty(lockKey))
                     {
-                        _knownLockedApps.Add(lockKey);
+                        _serviceLockedApps.Add(lockKey);
                         _lastLockedAppKey = lockKey;
                         EnsureLockWindow().ShowFor(lockKey, label, reason);
                     }
                     break;
                 case "unlock":
-                    // HoldDesktop empties CurrentAppKey after an app switch — use the
-                    // last SERVICE-locked key so the blocked app is actually restored
-                    // and removed; otherwise it stays cloaked/invisible (ghost wall).
-                    var unlockedKey = _lockWindow?.CurrentAppKey ?? _lastLockedAppKey;
+                    // HoldDesktop empties CurrentAppKey to "" after an app switch —
+                    // ?? only catches null, so without the empty-check the unlock
+                    // would drop NO key: the blocked app stays in _serviceLockedApps
+                    // and the next focus re-walls it with no service lock behind it.
+                    var unlockedKey = _lockWindow?.CurrentAppKey;
+                    if (string.IsNullOrEmpty(unlockedKey)) unlockedKey = _lastLockedAppKey;
                     _lastLockedAppKey = null;
                     _lockWindow?.HideLock();
                     _lockWindow?.RestoreAllMinimized();
                     if (!string.IsNullOrEmpty(unlockedKey))
                     {
-                        _knownLockedApps.Remove(unlockedKey);
+                        _serviceLockedApps.Remove(unlockedKey);
+                        _serviceLockedApps.Remove(System.IO.Path.GetFileName(unlockedKey));
                         _lockWindow?.RestoreMinimized(unlockedKey);
                         _lockWindow?.ClearMinimized();
                     }
+
+                    // A broadcast unlock with no tracked key still clears the wall
+                    // (service restart edge: hello decided unlocked). Everything the
+                    // service had locked is void now.
+                    _serviceLockedApps.Clear();
                     break;
                 case "pinState":
                     _pinConfigured = message.TryGetProperty("configured", out var configured) && configured.GetBoolean();

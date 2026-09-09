@@ -77,7 +77,21 @@ public sealed class UsageLedger
     {
         lock (this.gate)
         {
-            var dayKey = DayKeyOf(timestampMs);
+            // Advance the rollback clamp anchor (tamper detection + never-backwards
+            // ledger time), then sanitize the caller's raw wall time against ROLLBACK
+            // only: an event older than the ledger's last-seen wall time is clamped up
+            // (a backwards NTP correction must not become a negative-fare ride for the
+            // newly focused app, nor break the 2s blip-merge comparison). A normal
+            // forward event — including one ahead of the fake-clock anchor in tests —
+            // is taken as-is.
+            _ = NowMs();
+            var timestamp = timestampMs;
+            if (timestamp <= 0 || timestamp < this.lastWallMs)
+            {
+                timestamp = this.lastWallMs;
+            }
+
+            var dayKey = DayKeyOf(timestamp);
 
             if (this.open != null && this.open.AppKey == appKey && this.open.DayKey == dayKey)
             {
@@ -87,7 +101,7 @@ public sealed class UsageLedger
 
             if (this.open is { } previousOpen)
             {
-                var end = Math.Max(LiveElapsedMs(previousOpen) + previousOpen.StartMs, timestampMs);
+                var end = Math.Max(LiveElapsedMs(previousOpen) + previousOpen.StartMs, timestamp);
                 var openDay = GetDay(previousOpen.DayKey);
                 openDay.Sessions.Add(new Session(previousOpen.AppKey, previousOpen.StartMs, end));
                 this.open = null;
@@ -107,7 +121,7 @@ public sealed class UsageLedger
                     continue;
                 }
 
-                if (timestampMs - previous.EndMs < MergeGapMs && previous.EndMs <= timestampMs)
+                if (timestamp - previous.EndMs < MergeGapMs && previous.EndMs <= timestamp)
                 {
                     day.Sessions.RemoveAt(i);
                     this.open = new OpenSession(dayKey, appKey, previous.StartMs,
@@ -120,7 +134,7 @@ public sealed class UsageLedger
                 break; // most recent run of this app was too long ago: no merge
             }
 
-            this.open = new OpenSession(dayKey, appKey, timestampMs, MonotonicTicks());
+            this.open = new OpenSession(dayKey, appKey, timestamp, MonotonicTicks());
             this.dirtyDays.Add(dayKey);
             // The tiny open-session marker is written immediately so a crash right after a
             // switch resumes the NEW app's session (the bulky session list flushes lazily).
@@ -398,6 +412,20 @@ public sealed class UsageLedger
                     this.dirtyDays.Add(entry.D); // next flush folds them into the day file
                 }
             }
+
+            // Powered-off/asleep guard: if the machine was down or asleep far longer
+            // than the observed last-seen time, the app was NOT in use — close the
+            // session at lastSeen instead of resuming it with the whole downtime
+            // billed (an overnight +10h on the shutdown-day app). A small grace
+            // absorbs a paused-but-alive gap.
+            const long DowntimeGraceMs = 120_000;
+            if (m.LastSeenMs > 0 && m.S > 0 && m.LastSeenMs - m.S > DowntimeGraceMs)
+            {
+                var state = GetDay(m.DayKey);
+                state.Sessions.Add(new Session(m.K, m.S, m.LastSeenMs));
+                this.dirtyDays.Add(m.DayKey);
+                marker = null; // session closed; do not resume
+            }
         }
 
         OpenCandidate? legacy = null;
@@ -518,6 +546,9 @@ public sealed class UsageLedger
             DayKey = live.DayKey,
             K = live.AppKey,
             S = live.StartMs,
+            // Elapsed-so-far of the live session: restore compares start vs this
+            // to detect powered-off gaps (see RestoreOpenSession).
+            LastSeenMs = live.StartMs + LiveElapsedMs(live),
         };
         if (this.markerPending.Count > 0)
         {
@@ -536,6 +567,13 @@ public sealed class UsageLedger
         {
             if (this.dirtyDays.Count > 0)
             {
+                // Marker BEFORE day files: a crash between the two writes leaves the
+                // marker still carrying Pending sessions that are NOT yet in their
+                // day file (restored exactly once — correct). The reverse order let a
+                // crash double-count every pending session on restart.
+                this.markerPending.Clear();
+                PersistOpenMarker();
+
                 foreach (var dayKey in this.dirtyDays)
                 {
                     if (this.days.ContainsKey(dayKey))
@@ -546,14 +584,6 @@ public sealed class UsageLedger
                 }
 
                 this.dirtyDays.Clear();
-            }
-
-            if (this.markerPending.Count > 0)
-            {
-                // The closed sessions are now inside their day files; the marker no
-                // longer needs to carry them.
-                this.markerPending.Clear();
-                PersistOpenMarker();
             }
         }
     }
@@ -678,6 +708,12 @@ public sealed class UsageLedger
         public string K { get; set; } = string.Empty;
 
         public long S { get; set; }
+
+        /// <summary>Wall time of the last ledger observation for the open session. Restore
+        /// treats a start older than this by more than the downtime grace as a session that
+        /// ended at lastSeen — without it, powered-off/asleep time is billed wholesale to
+        /// whatever app happened to be foreground at shutdown.</summary>
+        public long LastSeenMs { get; set; }
 
         /// <summary>Closed sessions not yet folded into their day file (crash-durable via this marker).</summary>
         public List<PendingEntry>? Pending { get; set; }

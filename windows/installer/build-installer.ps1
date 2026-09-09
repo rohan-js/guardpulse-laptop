@@ -24,8 +24,38 @@ $LogoIco = Join-Path $WinDir "assets\guardpulse-laptop.ico"
 
 Write-Host "=== GuardPulse Laptop Installer Build ===" -ForegroundColor Cyan
 
-# --- 1. Publish both projects ---
+# --- 0. Firebase config coherence guard ---
+# The installer pre-fills from firebase-local.iss; the Android side reads
+# firebase.local.properties. Both must hold the SAME project triple, and the
+# URL must belong to the project — a mismatch (US key + SG URL) produced an
+# agent that signed in fine and failed every cloud write silently.
+Write-Host "[0/5] Validating Firebase config coherence..." -ForegroundColor Yellow
+$FirebaseLocalIss = Join-Path $InstallerDir "firebase-local.iss"
+$FirebaseProps = Join-Path $Root "firebase.local.properties"
+if (-not (Test-Path $FirebaseLocalIss)) { throw "firebase-local.iss not found - the installer would ship a placeholder API key" }
+$issKey = (Select-String -Path $FirebaseLocalIss -Pattern 'FirebaseApiKey\s+"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+if ([string]::IsNullOrWhiteSpace($issKey)) { throw "FirebaseApiKey not found in firebase-local.iss" }
+if ($issKey -match 'REPLACE_WITH|__') { throw "firebase-local.iss still holds a placeholder API key" }
+$propsKey = $null; $propsProject = $null; $propsUrl = $null
+foreach ($line in (Get-Content $FirebaseProps)) {
+    if ($line -match '^\s*firebase\.apiKey\s*=\s*(.+?)\s*$') { $propsKey = $Matches[1] }
+    if ($line -match '^\s*firebase\.projectId\s*=\s*(.+?)\s*$') { $propsProject = $Matches[1] }
+    if ($line -match '^\s*firebase\.databaseUrl\s*=\s*(.+?)\s*$') { $propsUrl = $Matches[1] }
+}
+if ((Test-Path $FirebaseProps) -and $propsKey -and ($propsKey -ne $issKey)) {
+    throw "Firebase API key mismatch: firebase-local.iss ($($issKey.Substring(0,12))...) vs firebase.local.properties ($($propsKey.Substring(0,12))...). Keep the two files in sync."
+}
+# The .iss also hardcodes the wizard prefill for projectId/databaseUrl - read them back from installer.iss and check the URL contains the project.
+$issProject = (Select-String -Path (Join-Path $InstallerDir "installer.iss") -Pattern "FirebasePage.Values\[1\] := '([^']+)'").Matches.Groups[1].Value
+$issUrl = (Select-String -Path (Join-Path $InstallerDir "installer.iss") -Pattern "FirebasePage.Values\[2\] := '([^']+)'").Matches.Groups[1].Value
+if ($issUrl -notlike "*$issProject*") { throw "installer.iss wizard prefill is incoherent: databaseUrl does not contain project '$issProject'" }
+if ($propsUrl -and $propsProject -and ($propsUrl -notlike "*$propsProject*")) { throw "firebase.local.properties is incoherent: databaseUrl does not contain project '$propsProject'" }
+Write-Host "  OK (project $issProject)" -ForegroundColor Green
+
+# --- 1. Publish both projects (clean: dotnet publish accumulates, so a
+#        removed feature would keep shipping from stale intermediates) ---
 Write-Host "`n[1/5] Publishing GuardPulse.Agent.Service..." -ForegroundColor Yellow
+Remove-Item -Path (Join-Path $WinDir "publish\service") -Recurse -Force -ErrorAction SilentlyContinue
 & $DotNet publish (Join-Path $WinDir "src\GuardPulse.Agent.Service\GuardPulse.Agent.Service.csproj") `
     -c $Configuration -r win-x64 --self-contained `
     -p:PublishReadyToRun=true --nologo -v q `
@@ -34,6 +64,7 @@ if ($LASTEXITCODE -ne 0) { throw "Service publish failed ($LASTEXITCODE)" }
 Write-Host "  OK" -ForegroundColor Green
 
 Write-Host "[2/5] Publishing GuardPulse.Agent.Session..." -ForegroundColor Yellow
+Remove-Item -Path (Join-Path $WinDir "publish\session") -Recurse -Force -ErrorAction SilentlyContinue
 & $DotNet publish (Join-Path $WinDir "src\GuardPulse.Agent.Session\GuardPulse.Agent.Session.csproj") `
     -c $Configuration -r win-x64 --self-contained `
     -p:PublishReadyToRun=true --nologo -v q `
@@ -55,6 +86,8 @@ Remove-Item -Path $PublishDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $PublishDir | Out-Null
 Copy-Item -Path (Join-Path $WinDir "publish\service\*") -Destination $PublishDir -Recurse -Force
 Copy-Item -Path (Join-Path $WinDir "publish\session\*") -Destination $PublishDir -Recurse -Force
+# PDBs ship source paths on disk for no benefit in a de-branded installer.
+Get-ChildItem $PublishDir -Filter "*.pdb" -Recurse | Remove-Item -Force
 
 # Copy content-blocklists
 $BlSrc = Join-Path $WinDir "content-blocklists"

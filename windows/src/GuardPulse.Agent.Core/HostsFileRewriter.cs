@@ -39,11 +39,11 @@ public static class HostsFileRewriter
         }
     }
 
-    /// <summary>The full marked block (markers included) redirecting every domain to 0.0.0.0.</summary>
+    /// <summary>The full marked block (markers included) redirecting every domain to 0.0.0.0. Line endings are LF; ApplyBlock re-emits with the hosts file's dominant ending.</summary>
     public static string BuildBlock(IReadOnlyDictionary<string, IEnumerable<string>> categoriesToDomains)
     {
         var builder = new StringBuilder();
-        builder.AppendLine(BeginMarker);
+        builder.Append(BeginMarker).Append('\n');
         foreach (var (category, domains) in categoriesToDomains)
         {
             var materialized = domains.ToList();
@@ -52,10 +52,10 @@ public static class HostsFileRewriter
                 continue;
             }
 
-            builder.AppendLine("# " + category);
+            builder.Append("# ").Append(category).Append('\n');
             foreach (var domain in materialized)
             {
-                builder.AppendLine("0.0.0.0 " + domain);
+                builder.Append("0.0.0.0 ").Append(domain).Append('\n');
             }
         }
 
@@ -71,6 +71,10 @@ public static class HostsFileRewriter
     /// </summary>
     public static string ApplyBlock(string hostsContent, string? block)
     {
+        // Parse on normalized \n but RE-EMIT with the file's dominant line
+        // ending: silently rewriting every CRLF line to LF dirtied the whole
+        // file on first apply (diff noise, some parsers care).
+        var useCrLf = hostsContent.Contains("\r\n", StringComparison.Ordinal);
         var content = hostsContent.Replace("\r\n", "\n");
         var begin = content.IndexOf(BeginMarker, StringComparison.Ordinal);
         var end = content.IndexOf(EndMarker, StringComparison.Ordinal);
@@ -109,8 +113,12 @@ public static class HostsFileRewriter
                     continue;
                 }
 
-                if (!line.StartsWith("0.0.0.0 ", StringComparison.Ordinal)
-                    && !line.StartsWith("# ", StringComparison.Ordinal))
+                var isBlockEntry = line.StartsWith("0.0.0.0 ", StringComparison.Ordinal);
+                // Category headers are "# " + a single bare word ("# social");
+                // any other comment shape is user content and stops the scan.
+                var isCategoryHeader = line.StartsWith("# ", StringComparison.Ordinal)
+                    && !line[2..].Contains(' ');
+                if (!isBlockEntry && !isCategoryHeader)
                 {
                     break; // reached original content
                 }
@@ -132,11 +140,13 @@ public static class HostsFileRewriter
         }
 
         content = content.TrimEnd('\n');
-        if (string.IsNullOrEmpty(block))
+        var eol = useCrLf ? "\r\n" : "\n";
+        var blockNormalized = block?.Replace("\n", eol);
+        if (string.IsNullOrEmpty(blockNormalized))
         {
-            return content.Length == 0 ? "" : content + "\n";
+            return content.Length == 0 ? "" : content + eol;
         }
 
-        return (content.Length == 0 ? "" : content + "\n\n") + block + "\n";
+        return (content.Length == 0 ? "" : content + eol + eol) + blockNormalized + eol;
     }
 }

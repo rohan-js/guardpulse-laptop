@@ -43,6 +43,7 @@ Start-Sleep 1
 # 4. Run key
 Log "[4] Removing Run key DeviceServiceAgent ..."
 Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "DeviceServiceAgent" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run" -Name "DeviceServiceAgent" -ErrorAction SilentlyContinue
 if ($?) { Log "  Removed" } else { Log "  Not present or failed: $Error[0]" }
 
 # 5. SafeBoot keys (both hives)
@@ -67,12 +68,44 @@ if (Test-Path "C:\ProgramData\GuardPulse") {
   try { Remove-Item -Path "C:\ProgramData\GuardPulse" -Recurse -Force -ErrorAction Stop; Log "  Deleted C:\ProgramData\GuardPulse" } catch { Log "  FAILED state: $_" }
 } else { Log "  State already gone" }
 
-# 8. Hosts cleanup (remove GuardPulse block if present - currently not present but safe)
-Log "[7] Hosts file check..."
+# 8. Hosts cleanup + browser policy keys (both left behind by older uninstalls)
+Log "[7] Hosts file + browser policy cleanup..."
 $hosts = "C:\Windows\System32\drivers\etc\hosts"
 if (Test-Path $hosts) {
-  $content = Get-Content $hosts -Raw -ErrorAction SilentlyContinue
-  if ($content -match "BEGIN GUARDPULSE") { Log "  Found GUARDPULSE block - would clean (not implemented, manual)" } else { Log "  No GUARDPULSE hosts block (MS telemetry only)" }
+    $content = Get-Content $hosts -Raw -ErrorAction SilentlyContinue
+    if ($content -match "BEGIN GUARDPULSE") {
+        $begin = $content.IndexOf("# BEGIN GUARDPULSE")
+        $endMarker = "# END GUARDPULSE CONTENT FILTER"
+        $end = $content.IndexOf($endMarker, $begin)
+        if ($begin -ge 0 -and $end -ge 0) {
+            $cleaned = $content.Remove($begin, ($end + $endMarker.Length) - $begin)
+            Set-Content -Path $hosts -Value $cleaned -Encoding ASCII -Force
+            & ipconfig.exe /flushdns | Out-Null
+            Log "  Removed GuardPulse hosts block"
+        } else {
+            Log "  GUARDPULSE markers found but END marker missing - manual hosts review needed"
+        }
+    } else {
+        Log "  No GUARDPULSE hosts block (MS telemetry only)"
+    }
+}
+foreach ($browserPolicy in @(
+    "HKLM:\SOFTWARE\Policies\Google\Chrome",
+    "HKLM:\SOFTWARE\Policies\Microsoft\Edge",
+    "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave"
+)) {
+    if (Test-Path $browserPolicy) {
+        Remove-Item -Path (Join-Path $browserPolicy "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $browserPolicy -Name "DnsOverHttpsMode" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $browserPolicy -Name "DnsOverHttpsTemplates" -ErrorAction SilentlyContinue
+        Log "  Cleaned browser policies: $browserPolicy"
+    }
+}
+$ffPolicy = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox"
+if (Test-Path $ffPolicy) {
+    Remove-Item -Path (Join-Path $ffPolicy "WebsiteFilter") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $ffPolicy -Name "DNSOverHTTPS" -ErrorAction SilentlyContinue
+    Log "  Cleaned browser policies: $ffPolicy"
 }
 
 # 9. Verify

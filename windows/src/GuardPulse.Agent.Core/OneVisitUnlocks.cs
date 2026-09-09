@@ -99,6 +99,31 @@ public sealed class OneVisitUnlocks
         }
     }
 
+    /// <summary>
+    /// Clears only UNTIMED (one-visit) grants for <paramref name="appKey"/>: a timed
+    /// grant ("30 minutes of game X") must survive foreground switches — its
+    /// deadline, not the child's alt-tabbing, decides when it ends. The host's
+    /// foreground-switch path calls this instead of <see cref="Clear"/>.
+    /// </summary>
+    public bool ClearOneVisit(string appKey)
+    {
+        lock (this.gate)
+        {
+            if (this.entries.TryGetValue(appKey, out var expiresAt) && expiresAt != null)
+            {
+                return false; // timed grant: leave it to expiry
+            }
+
+            if (this.entries.Remove(appKey))
+            {
+                Persist();
+                return true;
+            }
+
+            return false;
+        }
+    }
+
     public void ClearAll()
     {
         lock (this.gate)

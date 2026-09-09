@@ -182,6 +182,13 @@ public sealed class ForegroundHook : IDisposable
         "regedit.exe" or "regedt32.exe" => "guardpulse.windows.registry",
         "systemsettings.exe" or "control.exe" => "guardpulse.windows.settings",
         "msiexec.exe" => "guardpulse.windows.installers",
+        // Mirror InventoryScanner.MatchBypassRow: Inno-style uninstallers (incl.
+        // the temp "_unins" copy) so an "Installers locked" policy trips on
+        // exactly the exes that remove apps. The \Windows\Installer\ path rule
+        // lives in the service's suspend matcher (the hook only sees names).
+        _ when exeName.StartsWith("unins", StringComparison.Ordinal)
+            || exeName.StartsWith("_unins", StringComparison.Ordinal)
+            => "guardpulse.windows.installers",
         _ => null
     };
 

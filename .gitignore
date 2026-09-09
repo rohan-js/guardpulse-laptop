@@ -42,3 +42,4 @@ windows/installer/run-install.ps1
 windows/installer/Output/
 windows/installer/_mini2/
 .wrangler/
+windows/installer/install-transcript.txt

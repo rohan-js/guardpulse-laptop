@@ -60,6 +60,15 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 
 # --- copy binaries ------------------------------------------------------------
+# Remove stale install trees from a DIFFERENT directory than -InstallDir: older
+# script/installer runs used the x86 Program Files, and an orphaned tree keeps
+# runnable exes plus an old (possibly poisoned) agent-config.json.
+foreach ($staleDir in @("C:\Program Files\Device Service", "C:\Program Files (x86)\Device Service")) {
+    if ((-not [string]::Equals($staleDir, $InstallDir, [System.StringComparison]::OrdinalIgnoreCase)) -and (Test-Path $staleDir)) {
+        Remove-Item -Path $staleDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path (Join-Path $SourceDir "*") -Destination $InstallDir -Recurse -Force
 
@@ -88,6 +97,7 @@ if (Test-Path (Join-Path $StateRoot "device.json")) {
 }
 $LockTargets = @(
     (Join-Path $StateRoot "secrets.bin"),
+    (Join-Path $StateRoot "secrets.bin.mirror"),
     (Join-Path $StateRoot "enforcement-state.json")
 ) + (Get-ChildItem -Path $StateRoot -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -like "usage-*.json" -or $_.Name -like "offsets-*.json" -or $_.Name -like "blocks-*.json" } |

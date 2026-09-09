@@ -460,6 +460,35 @@ internal sealed class ProcessSuspender
                 }
             }
 
+            // Path-based bypass rows (mirror InventoryScanner.MatchBypassRow):
+            // control.exe is a Settings host, and \Windows\Installer\ +
+            // unins*/_unins* are installer/uninstaller binaries. Without these,
+            // an "Installers locked" / "Settings locked" policy never trips on
+            // exactly the exes that remove apps or change settings.
+            if (!string.IsNullOrEmpty(modulePath))
+            {
+                if (appKey == PolicyConstants.WINDOWS_SETTINGS_PACKAGE &&
+                    string.Equals(Path.GetFileName(modulePath), "control.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (appKey == PolicyConstants.WINDOWS_INSTALLERS_PACKAGE)
+                {
+                    if (modulePath.Contains("\\Windows\\Installer\\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    var fileLower = Path.GetFileName(modulePath).ToLowerInvariant();
+                    if (fileLower.StartsWith("unins", StringComparison.Ordinal) ||
+                        fileLower.StartsWith("_unins", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+            }
+
             return false;
         }
         catch
