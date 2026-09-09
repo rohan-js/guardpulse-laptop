@@ -1285,3 +1285,20 @@ test("laptop (tvUid) can delete decided unlock requests but not pending ones", a
   );
   await assertSucceeds(dbAs("tvUid").ref("devices/tv1/unlockRequests/u1").remove());
 });
+
+test("heartbeat may carry stoppedBy=parentPin (PIN-verified uninstall) but not other values", async () => {
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/heartbeat").set({
+      online: false,
+      lastSeen: 1,
+      stoppedBy: "parentPin",
+    })
+  );
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/heartbeat").set({
+      online: false,
+      lastSeen: 1,
+      stoppedBy: "forged",
+    })
+  );
+});

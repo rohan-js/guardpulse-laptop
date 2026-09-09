@@ -209,7 +209,8 @@ class ParentSyncRepository(private val database: DatabaseReference) {
                     online = child.child("online").getValue(Boolean::class.java) ?: false,
                     enforcementMode = child.child("enforcementMode").getValue(String::class.java)
                         ?: PolicyConstants.ENFORCEMENT_UNPROTECTED,
-                    protectionHealthy = child.child("protectionHealthy").getValue(Boolean::class.java) ?: false
+                    protectionHealthy = child.child("protectionHealthy").getValue(Boolean::class.java) ?: false,
+                    stoppedBy = child.child("stoppedBy").getValue(String::class.java)
                 )
             })
         }

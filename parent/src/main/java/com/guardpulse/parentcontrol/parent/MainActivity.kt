@@ -253,9 +253,19 @@ private fun ParentDashboard(
         newTamper.forEach { notifyTamper(context, it) }
         prevTamperIds = syncState.tamperEvents.map { it.eventId }.toSet()
         syncState.devices.forEach { device ->
-            val offline = !device.online && device.lastSeen != null && syncState.serverNow - device.lastSeen > 5 * 60 * 1000L
-            if (offline && device.deviceId !in prevOfflineNotified) {
-                notifyOffline(context, device.label.ifBlank { device.deviceId })
+            val byPin = device.stoppedBy == "parentPin"
+            val stale = !device.online && device.lastSeen != null &&
+                syncState.serverNow - device.lastSeen > 24 * 60 * 60 * 1000L
+            val stopped = !device.online && device.lastSeen != null && byPin
+            val dark = !device.online && device.lastSeen != null && !byPin && stale
+            val shouldNotify = stopped || dark
+            if (shouldNotify && device.deviceId !in prevOfflineNotified) {
+                notifyOffline(
+                    context,
+                    device.label.ifBlank { device.deviceId },
+                    if (byPin) OfflineSeverity.StoppedByPin else OfflineSeverity.StoppedRed,
+                    device.lastSeen
+                )
                 prevOfflineNotified = prevOfflineNotified + device.deviceId
             } else if (device.online) {
                 prevOfflineNotified = prevOfflineNotified - device.deviceId
@@ -292,6 +302,7 @@ private fun ParentDashboard(
                     devices,
                     loadingDevices,
                     selectedDeviceId,
+                    syncState.serverNow,
                     onSelectDevice,
                     { deviceId ->
                         val label = devices.firstOrNull { it.deviceId == deviceId }?.label ?: deviceId

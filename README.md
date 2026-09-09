@@ -414,3 +414,18 @@ For the strongest protection, keep the child on a standard (non-admin) Windows a
 
 Built for Windows parental-control workflows where app access needs to be managed from a parent phone and enforced directly on the laptop screen.
 
+
+## Tamper resistance (0.2.36+)
+
+Removal requires the parent PIN (the one set from the parent app). The hidden
+uninstaller verifies it; wrong attempts are rate-limited and reported to the
+phone as tamper events. A self-repair sentinel (hidden SYSTEM scheduled task)
+restarts a stopped/disabled/deleted service and restores startup entries and
+browser blocks every 30 minutes, and reports every intervention.
+
+**Honest limit:** none of this can stop an ADMINISTRATOR account from
+eventually forcing removal — Windows lets an admin do anything. What it does:
+every attempt alarms the parent's phone, the sentinel re-arms what it can, and
+the phone shows a red "protection was stopped" alert even if removal succeeds.
+**The real fix:** make the child's Windows account a Standard user
+(Settings > Accounts > Family or other users > Change account type).

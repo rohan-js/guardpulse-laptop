@@ -120,6 +120,7 @@ internal fun DevicesTab(
     devices: List<ParentDevice>,
     loadingDevices: Boolean,
     selectedDeviceId: String?,
+    serverNow: Long,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
     onSendMessage: (String, String, () -> Unit, (String) -> Unit) -> Unit,
@@ -209,6 +210,7 @@ internal fun DevicesTab(
                 DeviceCard(
                     device = device,
                     selected = device.deviceId == selectedDeviceId,
+                    serverNow = serverNow,
                     onSelectDevice = onSelectDevice,
                     onRemoveDevice = onRemoveDevice,
                     onSendMessage = onSendMessage
@@ -246,6 +248,7 @@ internal fun SelectedDeviceBanner(device: ParentDevice) {
 internal fun DeviceCard(
     device: ParentDevice,
     selected: Boolean,
+    serverNow: Long,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
     onSendMessage: (String, String, () -> Unit, (String) -> Unit) -> Unit
@@ -291,6 +294,32 @@ internal fun DeviceCard(
             MetaTile("Health", if (device.protectionHealthy) "Healthy" else "Needs setup", device.protectionHealthy, Modifier.weight(1f))
         }
         MetaTile("Last seen", formatTimestamp(device.lastSeen), device.online, Modifier.fillMaxWidth().padding(top = 12.dp))
+
+        // Device-gone-dark banner: mirrors the notification tiers so the state is
+        // visible even with notifications dismissed.
+        if (!device.online && device.lastSeen != null) {
+            val (bannerText, isAlarm) = when {
+                device.stoppedBy == "parentPin" ->
+                    "Removed with parent PIN — ${formatTimestamp(device.lastSeen)}" to false
+                serverNow - device.lastSeen > 24 * 60 * 60 * 1000L ->
+                    "Not reporting for over 24 hours" to false
+                else ->
+                    "POSSIBLE REMOVAL — protection was stopped" to true
+            }
+            Surface(
+                color = if (isAlarm) AlertRed else OutlineSoft,
+                contentColor = if (isAlarm) Color.White else TextMuted,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+            ) {
+                Text(
+                    bannerText,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (isAlarm) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+        }
 
         var messageText by remember { mutableStateOf("") }
         var sending by remember { mutableStateOf(false) }

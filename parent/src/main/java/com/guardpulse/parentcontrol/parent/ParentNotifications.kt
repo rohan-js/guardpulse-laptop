@@ -96,16 +96,51 @@ fun notifyTamper(context: Context, event: TamperEvent) {
     }
 }
 
-fun notifyOffline(context: Context, deviceLabel: String) {
+/**
+ * Two-tier device-gone-dark alert:
+ *  - SToppedRed (online:false without stoppedBy=parentPin): the protection was
+ *    stopped outside a PIN-verified uninstall — treat as possible removal.
+ *  - StoppedByPin (stoppedBy=parentPin): removed WITH the parent PIN — calm card,
+ *    no alarm (this is the parent's own action).
+ *  - Stale (no online:false, just silent >24h): amber "not reporting" — laptops
+ *    sleep for hours, so only a full day of silence warrants a nudge.
+ */
+enum class OfflineSeverity { StoppedRed, StoppedByPin, Stale }
+
+fun notifyOffline(
+    context: Context,
+    deviceLabel: String,
+    severity: OfflineSeverity = OfflineSeverity.StoppedRed,
+    lastSeen: Long? = null
+) {
     if (!canNotify(context)) return
+    val whenText = lastSeen?.let { "Last contact ${formatTimestamp(it)}" }
+    val (title, text, category) = when (severity) {
+        OfflineSeverity.StoppedByPin -> Triple(
+            "Protection removed",
+            "$deviceLabel was uninstalled using your parent PIN" + (whenText?.let { " — $it" } ?: "") + ".",
+            NotificationCompat.CATEGORY_STATUS
+        )
+        OfflineSeverity.StoppedRed -> Triple(
+            "POSSIBLE REMOVAL",
+            "Protection was stopped on $deviceLabel outside a PIN-verified uninstall" +
+                (whenText?.let { " — $it" } ?: "") + ". Check the device.",
+            NotificationCompat.CATEGORY_ALARM
+        )
+        OfflineSeverity.Stale -> Triple(
+            "Device not reporting",
+            "$deviceLabel has not reported for more than 24 hours" + (whenText?.let { " — $it" } ?: "") + ".",
+            NotificationCompat.CATEGORY_STATUS
+        )
+    }
     try {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Device offline")
-            .setContentText("$deviceLabel has been offline for more than 5 minutes")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$deviceLabel has been offline for more than 5 minutes"))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(if (severity == OfflineSeverity.StoppedRed) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(category)
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(nextOfflineId++, notification)

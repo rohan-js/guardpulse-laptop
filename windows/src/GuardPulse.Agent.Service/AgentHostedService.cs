@@ -104,6 +104,7 @@ public sealed partial class AgentHostedService(
     private ProcessSuspender _suspender = null!;
     private Watchdog _watchdog = null!;
     private PinRetryGate _pinRetry = null!;
+    private UninstallGate _uninstallGate = null!;
     private string _deviceId = "";
     private string _agentAppKey = "";
     private string? _ownerUid;
@@ -515,6 +516,7 @@ public sealed partial class AgentHostedService(
         }
 
         _pinRetry = new PinRetryGate(_time, Path.Combine(_stateDir, "pin-retry.json"));
+        _uninstallGate = new UninstallGate(_stateDir, _time);
         TrimWorkingSet(); // release JIT/startup pages; the loops allocate little
         _logger.LogInformation("Components wired for device {DeviceId}", _deviceId);
     }
@@ -690,6 +692,7 @@ public sealed partial class AgentHostedService(
             // + tab-rules broadcast complete within this handler (~100ms), instead of
             // "eventually" behind the ack — that ordering was the "not real time" gap.
             EvaluateCurrentForeground();
+            MirrorUninstallPin(snapshot);
             ApplyContentFilterHosts(snapshot);
             _ = Task.Run(() => WritePolicyCache(snapshot));
 
@@ -2748,6 +2751,204 @@ public sealed partial class AgentHostedService(
         _activity.PruneBefore(NowMs() - (long)ActivityRetention.TotalMilliseconds);
     }
 
+    /// <summary>Mirrors the snapshot PIN into the uninstall gate so removal requires
+    /// the parent PIN. A snapshot WITHOUT a pin clears the mirror (parent disabled the
+    /// PIN: removal becomes free, by the parent's own choice).</summary>
+    private void MirrorUninstallPin(ControlSnapshotV2 snapshot)
+    {
+        try
+        {
+            if (snapshot.Pin is { } pin)
+            {
+                _uninstallGate.SetPin(pin.Salt, pin.Hash, pin.Iterations ?? 0, pin.Version);
+            }
+            else
+            {
+                _uninstallGate.ClearPin();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Uninstall pin mirror update failed");
+        }
+    }
+
+    /// <summary>Consumes a valid uninstall permit: the PIN-verified uninstaller wrote it,
+    /// so say goodbye gracefully — offline heartbeat marked stoppedBy=parentPin (the
+    /// phone shows the neutral card, NOT the red removal alarm) + a tamper event for
+    /// the record. Called from the boundary tick; the uninstaller waits for the file
+    /// to disappear before tearing the stack down.</summary>
+    private async Task CheckUninstallPermitAsync()
+    {
+        if (!_uninstallGate.HasFreshPermit())
+        {
+            return;
+        }
+
+        _uninstallGate.ConsumePermit();
+        _logger.LogInformation("Uninstall permit accepted; marking protection as parent-removed");
+        try
+        {
+            var offline = new JsonObject { ["online"] = false, ["lastSeen"] = Sv(), ["stoppedBy"] = "parentPin" };
+            await _firebase.PatchAsync(FirebasePaths.DeviceHeartbeat(_deviceId),
+                offline.ToJsonString(JsonOpts), CancellationToken.None);
+            // Mirror onto the parent's device list: the phone reads users/{uid}/devices
+            // for its online/stoppedBy rendering, not the heartbeat node.
+            if (!string.IsNullOrEmpty(_ownerUid))
+            {
+                await _firebase.PatchAsync(FirebasePaths.UserDevice(_ownerUid, _deviceId),
+                    offline.ToJsonString(JsonOpts), CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Parent-removed heartbeat write failed");
+        }
+
+        try
+        {
+            await PushTamperEventAsync("uninstalledByParent",
+                "GuardPulse was removed from this laptop using the parent PIN.");
+        }
+        catch
+        {
+            // device is going away anyway
+        }
+    }
+
+    /// <summary>
+    /// Reads sentinel-events.jsonl (written by the GuardPulseSentinel scheduled
+    /// task) and converts new interventions into tamper events for the phone.
+    /// The file is line-delimited JSON; position is persisted so events survive
+    /// restarts. Also verifies the sentinel task still exists — mutual watchdog:
+    /// the task re-arms the service, the service re-arms the task.
+    /// </summary>
+    private async Task CheckSentinelEventsAsync()
+    {
+        // Task-missing check (mutual watchdog): if the sentinel script survives
+        // but the task was deleted, re-register it. The sentinel re-arms the
+        // service; the service re-arms the task. A standard user can touch neither.
+        var scriptPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System), "GuardPulse", "sentinel.ps1");
+        if (File.Exists(scriptPath))
+        {
+            var result = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "schtasks.exe"),
+                Arguments = "/query /tn GuardPulseSentinel",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true
+            });
+            if (result is null || result.ExitCode != 0)
+            {
+                // Recreate by running the script in self-registration mode.
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\" -Register",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                })?.Dispose();
+                _logger.LogWarning("GuardPulseSentinel task was missing; re-registered it");
+            }
+            else
+            {
+                result.Dispose();
+            }
+        }
+
+        var eventsPath = Path.Combine(_stateDir, "sentinel-events.jsonl");
+        try
+        {
+            if (!File.Exists(eventsPath))
+            {
+                return;
+            }
+
+            var lines = File.ReadAllLines(eventsPath);
+            var position = 0L;
+            var stored = _secrets.Get("sentinel.events.position");
+            if (long.TryParse(stored, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            {
+                position = parsed;
+            }
+
+            var reported = 0;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                position += lines[i].Length + 2; // CRLF-agnostic high-water mark
+                if (position <= parsed || string.IsNullOrWhiteSpace(lines[i]))
+                {
+                    continue;
+                }
+
+                string? type = null;
+                string? message = null;
+                try
+                {
+                    using var doc = JsonDocument.Parse(lines[i]);
+                    type = GetString(doc.RootElement, "type");
+                    message = GetString(doc.RootElement, "message");
+                }
+                catch (JsonException)
+                {
+                }
+
+                if (string.IsNullOrEmpty(type))
+                {
+                    continue;
+                }
+
+                reported++;
+                await PushTamperEventAsync(type, message ?? "The protection self-repair sentinel intervened.");
+            }
+
+            _secrets.Set("sentinel.events.position", position.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Sentinel events read failed");
+        }
+    }
+
+    /// <summary>Reports PIN-gated uninstall attempts (wrong PINs entered in the
+    /// uninstaller) as tamper events; the attempt file records failed verifications
+    /// written by the elevated uninstaller helper.</summary>
+    private async Task CheckUninstallAttemptsAsync()
+    {
+        var path = Path.Combine(_stateDir, "uninstall-attempt.json");
+        string? payload;
+        try
+        {
+            if (!File.Exists(path)) return;
+            payload = File.ReadAllText(path);
+            File.Delete(path);
+        }
+        catch
+        {
+            return; // locked mid-write or ACL: try again next tick
+        }
+
+        if (string.IsNullOrWhiteSpace(payload) || payload.Trim() == "null") return;
+        var count = 0;
+        long latestAt = 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            count = doc.RootElement.TryGetProperty("count", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+            latestAt = doc.RootElement.TryGetProperty("latestAtMs", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt64() : 0;
+        }
+        catch (JsonException)
+        {
+        }
+
+        if (count <= 0) return;
+        await PushTamperEventAsync("uninstallAttempt",
+            $"Someone entered a wrong parent PIN in the uninstaller {count} time(s)" +
+            (latestAt > 0 ? $" (last at {DateTimeOffset.FromUnixTimeMilliseconds(latestAt).ToLocalTime():HH:mm:ss})." : "."));
+    }
+
     // ------------------------------------------------------------------- tamper
     private async Task PushTamperEventAsync(string type, string message)
     {
@@ -3093,6 +3294,12 @@ public sealed partial class AgentHostedService(
         // Commands have no other poll fallback: if the commands SSE stream is down,
         // owner-sent rescanApps/resetToday/unpair/openSetup would never arrive.
         _ = RunSafeAsync("commands-boundary", PollCommandsAsync);
+        // Uninstall-gate watchers: an admin entered the parent PIN in the
+        // uninstaller (permit → graceful parent-removed goodbye) or guessed wrong
+        // (attempt file → tamper alarm to the phone).
+        _ = RunSafeAsync("uninstall-permit", CheckUninstallPermitAsync);
+        _ = RunSafeAsync("uninstall-attempts", CheckUninstallAttemptsAsync);
+        _ = RunSafeAsync("sentinel-events", CheckSentinelEventsAsync);
         return Task.CompletedTask;
     }
 

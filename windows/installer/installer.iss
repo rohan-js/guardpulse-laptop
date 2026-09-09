@@ -53,9 +53,16 @@ VersionInfoVersion={#AppVersion}
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; Surface the honest limit where the parent will actually read it.
+FinishedLabelNoIcons=Setup has finished installing Device Service.%n%nIMPORTANT: for full protection, the child's Windows account must be a STANDARD user (Settings > Accounts > Family or other users > Change account type). An administrator account can remove any software - this installer's PIN gate, self-repair sentinel and tamper alerts make removal hard and loud, but only a standard account makes it stoppable.%n%nWrong-PIN uninstall attempts and tamper events are reported to the parent app.
+
 [Files]
 Source: "publish\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "agent-config.template.json"; DestDir: "{app}"; Flags: ignoreversion
+; Self-repair sentinel: deployed OUTSIDE {app} (System32\GuardPulse) so it
+; survives deletion of the app directory; registered as a hidden SYSTEM task.
+Source: "sentinel.ps1"; DestDir: "{sys}\GuardPulse"; Flags: ignoreversion
 
 [UninstallDelete]
 ; Removes runtime-created files (agent-config.json, local logs) on uninstall.
@@ -92,6 +99,10 @@ Filename: "{sys}\net.exe"; Parameters: "start {#ServiceName}"; Flags: runhidden 
 [Code]
 var
   FirebasePage: TInputQueryWizardPage;
+  // Uninstall PIN gate (shown by the uninstaller, not this installer).
+  // SentinelRegistered tracks whether ssPostInstall deployed the self-repair
+  // task, so the uninstaller knows whether to attempt its removal.
+  SentinelDeployed: Boolean;
   // Previous install's uninstaller folder, captured at ssInstall (before Inno
   // rewrites the ARP registration) and cleaned up at ssPostInstall.
   OldUninstDir: String;
@@ -341,6 +352,45 @@ begin
   DeleteFile(ExpandConstant('{commonprograms}\GuardPulse\Dashboard.url'));
 end;
 
+procedure LockUninstallerDir(const Dir: string);
+var
+  Icacls, Cmd: string;
+  ResultCode: Integer;
+begin
+  // SYSTEM/Admins only + hidden: a standard user with "show hidden items" ON
+  // can neither list this folder nor run the uninstaller inside it. (The ARP
+  // key stays world-readable on purpose — it is the parent's entry point, and
+  // it is PIN-gated anyway.)
+  Icacls := ExpandConstant('{sys}\icacls.exe');
+  Cmd := Format('"%s" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)"', [Dir]);
+  Exec(Icacls, Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\attrib.exe'), '+h "' + Dir + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function RegisterSentinelTask: Boolean;
+var
+  ResultCode: Integer;
+  PsCmd: string;
+begin
+  // schtasks from XML would need a temp file; PowerShell one-liners keep it
+  // self-contained. The task runs sentinel.ps1 as SYSTEM (highest, hidden):
+  // at boot, at logon, and every 30 minutes.
+  PsCmd :=
+    '$action = New-ScheduledTaskAction -Execute powershell.exe -Argument ''-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\System32\GuardPulse\sentinel.ps1''; ' +
+    '$t1 = New-ScheduledTaskTrigger -AtStartup; ' +
+    '$t2 = New-ScheduledTaskTrigger -AtLogOn; ' +
+    '$t3 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(30) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650); ' +
+    '$p = New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest; ' +
+    '$s = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10); ' +
+    'Register-ScheduledTask -TaskName GuardPulseSentinel -Action $action -Trigger @($t1,$t2,$t3) -Principal $p -Settings $s -Force | Out-Null';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -Command "' + PsCmd + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := (ResultCode = 0);
+  if Result then
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/run /tn GuardPulseSentinel', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure HideUninstaller;
 var
   UninsExe, UninsDat, NewDir, NewExe, NewDat, ArpKey, Chars: string;
@@ -380,6 +430,10 @@ begin
 
   // Track the hidden exe path for version-resource stripping after install.
   HiddenUninstExe := NewExe;
+
+  // SYSTEM/Admins-only + hidden: a standard user cannot see or run the
+  // uninstaller even with "show hidden items" enabled.
+  LockUninstallerDir(NewDir);
 
   // Keep Add/Remove Programs functional but pointed at the hidden location.
   // The GUID braces are built via Chr() to sidestep preprocessor escaping.
@@ -513,6 +567,11 @@ begin
       if ResultCode <> 0 then
         MsgBox(Format('The {#ServiceName} service could not be started (error %d). It will start automatically at the next boot.', [ResultCode]), mbError, MB_OK);
 
+      // Self-repair sentinel: hidden SYSTEM task (boot + logon + every 30 min)
+      // that re-arms a stopped/disabled/deleted service, restores startup entries
+      // and browser blocks, and records every intervention for tamper events.
+      SentinelDeployed := RegisterSentinelTask;
+
       // Last: hide the uninstaller (files were written before this step),
       // then strip its version resource so it shows no metadata in Explorer.
       HideUninstaller;
@@ -546,7 +605,195 @@ begin
   WaitForServiceGone;
 end;
 
+// ---------------------------------------------------------------------------
+// Uninstall PIN gate: removal requires the parent PIN (the same one set from
+// the phone app). The gate reads uninstall-pin.json (SYSTEM/Admins-only mirror
+// of the current PIN, written by the service), verifies via PBKDF2 (v2) or
+// SHA-256 (legacy v1), and on success writes uninstall-permit.json (15-minute
+// TTL) which usUninstall consumes. Wrong attempts append to
+// uninstall-attempt.json; the running service reports them to the phone as
+// tamper events and the escalating rejection window stops guess spam.
+// ---------------------------------------------------------------------------
+
+function PinFileExists: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonappdata}\GuardPulse\Laptop\uninstall-pin.json'));
+end;
+
+function PermitFileExists: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonappdata}\GuardPulse\Laptop\uninstall-permit.json'));
+end;
+
+procedure ConsumePermit;
+begin
+  DeleteFile(ExpandConstant('{commonappdata}\GuardPulse\Laptop\uninstall-permit.json'));
+end;
+
+procedure RemoveSentinel;
+var
+  ResultCode: Integer;
+begin
+  // Kill the sentinel BEFORE anything else so it cannot re-arm mid-uninstall.
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn GuardPulseSentinel /f',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  DelTree(ExpandConstant('{sys}\GuardPulse'), True, True, True);
+end;
+
+// Prompts for the 6-digit PIN. Inno's uninstaller has no InputQuery, so this
+// shells a tiny WinForms input box through PowerShell (elevated already).
+// Returns False when cancelled. Trims to digits-only, max 6 chars.
+function PromptForPin(var Pin: string): Boolean;
+var
+  ResultCode: Integer;
+  Script, OutFile, PsCmd, ScriptPath: string;
+  Raw: AnsiString;
+begin
+  Result := False;
+  Pin := '';
+  OutFile := ExpandConstant('{tmp}') + '\pin-answer.txt';
+  DeleteFile(OutFile);
+  Script :=
+    'Add-Type -AssemblyName Microsoft.VisualBasic' + #13#10 +
+    '$answer = [Microsoft.VisualBasic.Interaction]::InputBox(' + Chr(39) + 'Enter the 6-digit parent PIN to allow removal:' + Chr(39) + ', ' + Chr(39) + 'GuardPulse' + Chr(39) + ', ' + Chr(39) + Chr(39) + ')' + #13#10 +
+    'Set-Content -Path ' + Chr(39) + '%OUT%' + Chr(39) + ' -Value $answer -Force';
+  StringChangeEx(Script, '%OUT%', OutFile, True);
+  ScriptPath := ExpandConstant('{tmp}') + '\pin-prompt.ps1';
+  SaveStringToFile(ScriptPath, Script, False);
+  PsCmd := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
+  Exec(ExpandConstant('{sys}') + '\WindowsPowerShell\v1.0\powershell.exe',
+    PsCmd, '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+  DeleteFile(ScriptPath);
+  if not FileExists(OutFile) then
+    Exit; // cancelled / window closed
+  LoadStringFromFile(OutFile, Raw);
+  DeleteFile(OutFile);
+  Pin := Trim(string(Raw));
+  // Cancelled (empty answer) counts as cancel.
+  if Pin = '' then
+    Exit;
+  Result := True;
+end;
+
+// Runs the elevated PowerShell verify helper: verifies Pin against
+// uninstall-pin.json; on success writes uninstall-permit.json; on failure
+// records uninstall-attempt.json for tamper reporting. Exit code: 0 granted,
+// 2 wrong PIN, 4 pin file missing (gate open -> allowed).
+function TryVerifyPin(const Pin: string): Boolean;
+var
+  HelperScript, PsCmd: string;
+  ResultCode: Integer;
+  Q: Char;
+begin
+  Q := Chr(39); // single quote
+  HelperScript := ExpandConstant('{tmp}') + '\verify-pin.ps1';
+  SaveStringToFile(HelperScript,
+    'param([string]$Pin)' + #13#10 +
+    '$ErrorActionPreference = ' + Q + 'Stop' + Q + #13#10 +
+    '$state = Join-Path $env:ProgramData ' + Q + 'GuardPulse\Laptop' + Q + #13#10 +
+    '$pinFile = Join-Path $state ' + Q + 'uninstall-pin.json' + Q + #13#10 +
+    'if (-not (Test-Path $pinFile)) { exit 4 }' + #13#10 +
+    '$pin = Get-Content $pinFile -Raw | ConvertFrom-Json' + #13#10 +
+    'function B64Url([string]$s) { $p = $s.Replace(' + Q + '-' + Q + ',' + Q + '+' + Q + ').Replace(' + Q + '_' + Q + ',' + Q + '/' + Q + '); switch ($p.Length % 4) { 2 { $p = $p + ' + Q + '==' + Q + ' } 3 { $p = $p + ' + Q + '=' + Q + ' } } [Convert]::FromBase64String($p) }' + #13#10 +
+    '$ok = $false' + #13#10 +
+    'try {' + #13#10 +
+    '  if ($pin.Version -eq 2) {' + #13#10 +
+    '    $salt = B64Url $pin.Salt' + #13#10 +
+    '    $d = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Pin, $salt, [int]$pin.Iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)' + #13#10 +
+    '    $key = $d.GetBytes(32)' + #13#10 +
+    '    $actual = [Convert]::ToBase64String($key).TrimEnd(' + Q + '=' + Q + ').Replace(' + Q + '+' + Q + ',' + Q + '-' + Q + ').Replace(' + Q + '/' + Q + ',' + Q + '_' + Q + ')' + #13#10 +
+    '    $ok = ($actual -eq $pin.Hash)' + #13#10 +
+    '  } else {' + #13#10 +
+    '    $sha = [System.Security.Cryptography.SHA256]::Create()' + #13#10 +
+    '    $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($pin.Salt + ' + Q + ':' + Q + ' + $Pin)))' + #13#10 +
+    '    $actual = [Convert]::ToBase64String($bytes).TrimEnd(' + Q + '=' + Q + ').Replace(' + Q + '+' + Q + ',' + Q + '-' + Q + ').Replace(' + Q + '/' + Q + ',' + Q + '_' + Q + ')' + #13#10 +
+    '    $ok = ($actual -eq $pin.Hash)' + #13#10 +
+    '  }' + #13#10 +
+    '} catch { $ok = $false }' + #13#10 +
+    'if (-not $ok) {' + #13#10 +
+    '  $attFile = Join-Path $state ' + Q + 'uninstall-attempt.json' + Q + #13#10 +
+    '  $count = 1; $latest = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $prev = $null' + #13#10 +
+    '  try { $prev = Get-Content $attFile -Raw | ConvertFrom-Json } catch { }' + #13#10 +
+    '  if ($prev -and $prev.count) { $count = [int]$prev.count + 1 }' + #13#10 +
+    '  if ($prev -and $prev.latestAtMs) { $latest = [int64]$prev.latestAtMs }' + #13#10 +
+    '  $payload = @{ count = $count; latestAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress' + #13#10 +
+    '  Set-Content -Path $attFile -Value $payload -Force' + #13#10 +
+    '  icacls $attFile /grant:r *S-1-5-18:F *S-1-5-32-544:F | Out-Null' + #13#10 +
+    '  exit 2' + #13#10 +
+    '}' + #13#10 +
+    '$permitPath = Join-Path $state ' + Q + 'uninstall-permit.json' + Q + #13#10 +
+    '$permit = @{ issuedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); nonce = [Guid]::NewGuid().ToString(' + Q + 'N' + Q + ') } | ConvertTo-Json -Compress' + #13#10 +
+    'Set-Content -Path $permitPath -Value $permit -Force' + #13#10 +
+    'icacls $permitPath /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F | Out-Null' + #13#10 +
+    'exit 0', False);
+  PsCmd := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperScript + '" -Pin "' + Pin + '"';
+  Exec(ExpandConstant('{sys}') + '\WindowsPowerShell\v1.0\powershell.exe',
+    PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  DeleteFile(HelperScript);
+  Result := (ResultCode = 0);
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  Pin: string;
+  Attempts: Integer;
+begin
+  Result := True;
+
+  // Gate open (never-paired device / parent cleared the PIN): uninstall freely.
+  if not PinFileExists then
+    Exit;
+
+  // A pre-staged permit (or a retry after a failed teardown) passes through.
+  if PermitFileExists then
+  begin
+    RemoveSentinel;
+    ConsumePermit;
+    Exit;
+  end;
+
+  if UninstallSilent then
+  begin
+    MsgBox('Removal requires the parent PIN. Run this uninstaller normally (not silently) and enter the parent PIN.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  Attempts := 0;
+  while True do
+  begin
+    if not PromptForPin(Pin) then
+    begin
+      Result := False;
+      Exit;
+    end;
+
+    if (Length(Pin) = 6) and TryVerifyPin(Pin) then
+      Break;
+
+    // Gate might have opened meanwhile (parent cleared the PIN).
+    if not PinFileExists then
+      Exit;
+
+    Attempts := Attempts + 1;
+    if Attempts >= 5 then
+    begin
+      MsgBox('Too many wrong PIN attempts. Uninstall cancelled. This attempt was reported to the parent''s phone.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    MsgBox('Wrong PIN. Try again (' + IntToStr(5 - Attempts) + ' attempts left).', mbError, MB_OK);
+  end;
+
+  // Verified: dismantle the sentinel first, then consume the permit the helper
+  // wrote (usUninstall proceeds without further checks).
+  RemoveSentinel;
+  ConsumePermit;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+
 var
   ResultCode: Integer;
 begin

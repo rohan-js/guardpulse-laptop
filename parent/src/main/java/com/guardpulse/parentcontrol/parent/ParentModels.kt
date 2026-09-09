@@ -13,7 +13,11 @@ data class ParentDevice(
     val online: Boolean = false,
     val enforcementMode: String = PolicyConstants.ENFORCEMENT_UNPROTECTED,
     val protectionHealthy: Boolean = false,
-    val platform: String = PolicyConstants.PLATFORM_WINDOWS
+    val platform: String = PolicyConstants.PLATFORM_WINDOWS,
+    // "parentPin" when the last offline marker was a PIN-verified uninstall:
+    // the device went dark BY DESIGN, so the phone shows the neutral card
+    // instead of the red tamper alarm.
+    val stoppedBy: String? = null
 )
 
 data class ParentApp(
