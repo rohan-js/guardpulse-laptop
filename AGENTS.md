@@ -178,11 +178,11 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ## 11. CURRENT STATE (2026-09-10 — supersedes §6)
 
-* Head **`4ce3b63`** (0.2.36 tamper hardening), pushed, tree clean. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.36.exe`.
+* Head **`f2e675f`** (0.2.37: hidden uninstaller .msg sidecar fix + ssPostInstall net start retry), pushed, tree clean. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.37.exe`.
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
-* Kid laptop LAPTOP-TGL3R3H8 runs 0.2.36 (healthy since 09-10 11:23 IST). Dev machine DESKTOP-4ILVI11 runs 0.2.35 with its service **deliberately disabled** — do NOT start it without asking.
+* Kid laptop LAPTOP-TGL3R3H8 still runs 0.2.36 (healthy since 09-10 11:23 IST) — **0.2.37 reinstall pending**; until then it has no working hidden uninstaller. Dev machine DESKTOP-4ILVI11 runs 0.2.35 with its service **deliberately disabled** — do NOT start it without asking.
 * The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to see it.
-* Tests green at ship: dotnet Protocol+Core suites, rules 47 (`npm --prefix firebase run test:rules`).
+* Tests green at ship: dotnet 274 (140 Protocol + 134 Core incl. InstallerScriptTests), rules 47 (`npm --prefix firebase run test:rules`).
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)
 
@@ -196,8 +196,8 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ## 13. 0.2.37 BACKLOG (ordered)
 
-1. **P0 — HideUninstaller `.msg` fix**: rename the Inno 6.3+ sidecar messages file along with exe+dat (same rollback), add a test, rebuild installer, reinstall on the kid laptop. Until then the hidden uninstaller (and the parent's ARP entry) crashes before the PIN gate with no alarm. Full writeup: PROJECT_CONTEXT.md §2026-09-10.
-2. `ssPostInstall` `net start` retry (once, ~3 s later) so the transient "could not be started (error 2)" dialog never shows (sentinel already self-heals seconds later).
+1. ~~P0 — HideUninstaller `.msg` fix~~ **DONE in `f2e675f`**: sidecar renamed together with exe+dat (symmetric rollback, guarded by FileExists), InstallerScriptTests added, installer rebuilt as `DeviceServiceSetup-0.2.37.exe`. **Remaining: reinstall on the kid laptop** — until then it has no working hidden uninstaller.
+2. ~~`ssPostInstall` `net start` retry~~ **DONE in `f2e675f`** (one retry after a 3 s delay; the error dialog only shows if both attempts fail).
 3. Phone UX: dead-path app rows (exe absent on laptop) should read "not installed on laptop", not "App allowed".
 4. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10.
 
