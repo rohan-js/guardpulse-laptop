@@ -173,3 +173,38 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 1. Multi-file `icacls` invocations fail with error 87 — always loop per file.
 2. Subagent file edits can flip LF↔CRLF producing massive phantom diffs — always re-check with `git diff -w --stat`.
 3. `dotnet` is not on system PATH — absolute path required in every invocation.
+
+---
+
+## 11. CURRENT STATE (2026-09-10 — supersedes §6)
+
+* Head **`4ce3b63`** (0.2.36 tamper hardening), pushed, tree clean. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.36.exe`.
+* LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
+* Kid laptop LAPTOP-TGL3R3H8 runs 0.2.36 (healthy since 09-10 11:23 IST). Dev machine DESKTOP-4ILVI11 runs 0.2.35 with its service **deliberately disabled** — do NOT start it without asking.
+* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to see it.
+* Tests green at ship: dotnet Protocol+Core suites, rules 47 (`npm --prefix firebase run test:rules`).
+
+## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)
+
+* Project `guardpulse-laptop-sg`, instance `guardpulse-laptop-sg-default-rtdb`. US `guardpulse-laptop-control` is legacy — do not read/write it for current state.
+* firebase-tools **15.15** on PATH at `C:\Users\rohan\AppData\Roaming\npm\firebase`; auth via `~/.config/configstore/firebase-tools.json`.
+* Read: `MSYS_NO_PATHCONV=1 firebase database:get "/devices/<id>/heartbeat" --project guardpulse-laptop-sg --instance guardpulse-laptop-sg-default-rtdb`
+* **`database:patch` was removed in v15.** Admin writes: REST PATCH against `https://guardpulse-laptop-sg-default-rtdb.asia-southeast1.firebasedatabase.app/<path>.json?access_token=<token from firebase auth:print-access-token>`.
+* App keys in `control/v2/apps` and `state/apps` are **base64url(full exe path)** — decode before comparing with inventory.
+* Remote policy edit recipe (atomic, one PATCH at `/devices/{id}`): bump `control/v2/revisionId` (fresh push-style key) + `updatedAt` + `updatedBy`, set `control/v2/apps/<key>/manualBlocked`, and rewrite `sync/desired` with the same revisionId/kind/target/requestedAt/requestedBy. Agent applies in ~2 s and acks. Never edit without the parent's explicit ask.
+* Devices: `0d3fc12f…` kid laptop (live), `232a64da…` dev machine (paired, offline, service disabled), `f3834d1d…` old unpaired.
+
+## 13. 0.2.37 BACKLOG (ordered)
+
+1. **P0 — HideUninstaller `.msg` fix**: rename the Inno 6.3+ sidecar messages file along with exe+dat (same rollback), add a test, rebuild installer, reinstall on the kid laptop. Until then the hidden uninstaller (and the parent's ARP entry) crashes before the PIN gate with no alarm. Full writeup: PROJECT_CONTEXT.md §2026-09-10.
+2. `ssPostInstall` `net start` retry (once, ~3 s later) so the transient "could not be started (error 2)" dialog never shows (sentinel already self-heals seconds later).
+3. Phone UX: dead-path app rows (exe absent on laptop) should read "not installed on laptop", not "App allowed".
+4. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10.
+
+## 14. MORE PITFALLS (2026-09-10)
+
+1. firebase-tools v15 removed `database:patch`; `database:get` needs `--instance` for the regional SG instance.
+2. Git Bash strips Windows-tool flags (`/F`, `/v`, `/tn`) — prefix `MSYS_NO_PATHCONV=1`; `taskkill //F` double-slash form still fails, use the fallback.
+3. Inno 6.3.3 uninstaller = exe + dat + **msg** sidecar; renaming an uninstaller must move all three or it dies at startup.
+4. An offline session agent can full-screen-wall the logged-on user from a stale policy-cache (fail-closed by design). On a dev box, disable the service instead of leaving a half-alive install.
+5. `sc query` on the hardened service DACL returns Access denied from a non-elevated shell — read `HKLM\SYSTEM\CurrentControlSet\Services\GuardPulseDeviceService` registry values instead (ImagePath/Start are world-readable).
