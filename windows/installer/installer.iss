@@ -4,10 +4,10 @@
 ; and Run-key fallback — all elevated, all silent.
 
 #ifndef AppVersion
-#define AppVersion "0.2.33"
+#define AppVersion "0.2.37"
 #endif
 #ifndef AppVersionCode
-#define AppVersionCode "33"
+#define AppVersionCode "37"
 #endif
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"
@@ -393,10 +393,11 @@ end;
 
 procedure HideUninstaller;
 var
-  UninsExe, UninsDat, NewDir, NewExe, NewDat, ArpKey, Chars: string;
+  UninsExe, UninsDat, UninsMsg, NewDir, NewExe, NewDat, NewMsg, ArpKey, Chars: string;
   i: Integer;
 begin
-  // Move the Inno uninstaller (unins###.exe/.dat) into a RANDOM per-install
+  // Move the Inno uninstaller (unins###.exe/.dat/.msg — Inno 6.3+ keeps the
+  // uninstaller's UI strings in a .msg sidecar) into a RANDOM per-install
   // ProgramData folder with a bland name. The path is generated here from the
   // strong RNG and recorded only in the hidden ARP registry entry — nothing
   // GuardPulse-related marks where it lives.
@@ -408,15 +409,18 @@ begin
 
   NewExe := NewDir + '\devdiag.exe';
   NewDat := NewDir + '\devdiag.dat';
+  NewMsg := NewDir + '\devdiag.msg';
 
   UninsExe := ExpandConstant('{uninstallexe}');
   UninsDat := Copy(UninsExe, 1, Length(UninsExe) - Length(ExtractFileExt(UninsExe))) + '.dat';
+  UninsMsg := Copy(UninsExe, 1, Length(UninsExe) - Length(ExtractFileExt(UninsExe))) + '.msg';
 
   if not FileExists(UninsExe) then
     Exit;
 
   if FileExists(NewExe) then DeleteFile(NewExe);
   if FileExists(NewDat) then DeleteFile(NewDat);
+  if FileExists(NewMsg) then DeleteFile(NewMsg);
 
   if not RenameFile(UninsExe, NewExe) then
     Exit;
@@ -426,6 +430,20 @@ begin
   begin
     RenameFile(NewExe, UninsExe);
     Exit;
+  end;
+
+  // The .msg sidecar must move too: Inno 6.3+ refuses to start the uninstaller
+  // without its Messages file ("Messages file ... is missing" — it dies before
+  // InitializeUninstall, so the PIN gate never runs). Older Inno emits no
+  // .msg — skip the rename when absent.
+  if FileExists(UninsMsg) then
+  begin
+    if not RenameFile(UninsMsg, NewMsg) then
+    begin
+      RenameFile(NewDat, UninsDat);
+      RenameFile(NewExe, UninsExe);
+      Exit;
+    end;
   end;
 
   // Track the hidden exe path for version-resource stripping after install.
@@ -455,6 +473,7 @@ begin
   // Remove legacy unins files from the pre-0.2.5 {app} location (upgrade installs)
   DeleteFile(ExpandConstant('{app}\unins000.exe'));
   DeleteFile(ExpandConstant('{app}\unins000.dat'));
+  DeleteFile(ExpandConstant('{app}\unins000.msg'));
 end;
 
 procedure StripUninstallerMetadata;
@@ -561,9 +580,18 @@ begin
         'sdset {#ServiceName} "D:(A;;GA;;;SY)(A;;GA;;;BA)"',
         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-      // Start the service
+      // Start the service. A first attempt can fail transiently (observed:
+      // error 2 right after sc create on 0.2.36's 09-10 install) while SCM is
+      // still settling — wait once and retry before surfacing an error. The
+      // sentinel below also starts the service as SYSTEM on its first run.
       Exec(ExpandConstant('{sys}\net.exe'), 'start {#ServiceName}',
         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      if ResultCode <> 0 then
+      begin
+        Sleep(3000);
+        Exec(ExpandConstant('{sys}\net.exe'), 'start {#ServiceName}',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      end;
       if ResultCode <> 0 then
         MsgBox(Format('The {#ServiceName} service could not be started (error %d). It will start automatically at the next boot.', [ResultCode]), mbError, MB_OK);
 
