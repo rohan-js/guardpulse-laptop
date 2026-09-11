@@ -554,7 +554,12 @@ public static class InventoryScanner
             }
         }
 
-        return firstExe;
+        // No candidate exists on disk: the shortcut is stale (app uninstalled, or a
+        // game launcher moved its version-hashed exe). Returning the dead path would
+        // put a permanent row in the parent's app list that can never be enforced or
+        // report state — drop it instead; a running exe is re-discovered by the
+        // process scan on the next pass.
+        return null;
     }
 
     private static bool LooksLikeExecutablePath(string value)

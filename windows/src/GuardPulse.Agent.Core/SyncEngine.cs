@@ -23,7 +23,7 @@ public sealed class SyncEngine
     // REST fallback for the control/v2 SSE stream: when the stream is silently dead a
     // parent control write would otherwise never be seen. Polls the node directly and
     // feeds the same handler; the raw-content dedup skips identical snapshots. Fast
-    // (5s) while degraded so a parent lock lands in seconds; skipped entirely while
+    // (2s) while degraded so a parent lock lands in seconds; skipped entirely while
     // the stream is confirmed healthy - SSE pushes make the poll redundant there.
     private const int ControlPollIntervalMs = 2_000;
     // How long after the last received SSE line (data frame OR keep-alive; RTDB sends
@@ -31,6 +31,16 @@ public sealed class SyncEngine
     // keep-alive period, or a healthy-but-idle stream would look dead and trigger
     // endless redundant polling.
     private static readonly TimeSpan StreamAliveWindow = TimeSpan.FromSeconds(50);
+    // Low-rate reconciliation for the failure mode keep-alives cannot see: a stalled
+    // server fan-out keeps the SSE transport "alive" (lines still arrive, so the 2s
+    // poll above stays off and the 10-min idle timer keeps resetting) while silently
+    // dropping every put/patch event. Field-observed on two laptops: heartbeats,
+    // state uploads and message polls (all plain REST) kept flowing for hours while
+    // NO control revision was applied. The only cure is to stop trusting push
+    // liveness and GET the tiny control/desired nodes unconditionally; replays of
+    // unchanged content are no-ops, and the desired check re-acks an
+    // applied-but-unacknowledged revision (burnt ack-retry budget) within one cycle.
+    private static readonly TimeSpan ReconcileInterval = TimeSpan.FromSeconds(15);
     // Bounded retries for the sync/applied ack so a transient PATCH failure (rules or
     // transport) never strands the parent on "Waiting for laptop" forever.
     private const int AckMaxAttempts = 3;
@@ -229,6 +239,7 @@ public sealed class SyncEngine
 
         _ = RefreshOffsetLoopAsync(ct);
         _ = ControlPollLoopAsync(ct);
+        _ = ReconcileLoopAsync(ct);
     }
 
     /// <summary>
@@ -590,6 +601,82 @@ public sealed class SyncEngine
         }
     }
 
+    /// <summary>
+    /// Unconditional GET of control/v2 and sync/desired plus a re-ack of an
+    /// applied-but-unacknowledged revision (see ReconcileInterval). This is the only
+    /// defense against a silently-stalled SSE fan-out: keep-alives keep the transport
+    /// "connected" — the 2s poll off and the idle timer fed — while no event is ever
+    /// delivered, and sync/desired has no other poll fallback. Unchanged content is
+    /// a no-op (early-outs in the handle methods), so a healthy setup pays one small
+    /// GET per node per cycle and nothing else. Work-first: one reconcile runs
+    /// immediately at engine start, then every interval.
+    /// </summary>
+    internal async Task ReconcileLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                HandleDesiredData(await _firebase.GetAsync(FirebasePaths.DeviceSyncDesired(_deviceId), ct).ConfigureAwait(false));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                // transient REST failure; the next cycle retries
+            }
+
+            try
+            {
+                HandleControlData(await _firebase.GetAsync(FirebasePaths.DeviceControlV2(_deviceId), ct).ConfigureAwait(false));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                // transient REST failure; the next cycle retries
+            }
+
+            string? target;
+            lock (_gate)
+            {
+                target = _pendingDesired?.RevisionId;
+            }
+
+            // The snapshot is already enforced at the desired revision but its ack
+            // never landed (transient failures exhaust the 3-attempt budget). Re-ack
+            // directly — NotifyEnforcementAppliedAsync's own guards keep this safe.
+            if (target != null && LastValidSnapshot?.RevisionId == target && LastAppliedRevision != target)
+            {
+                try
+                {
+                    await NotifyEnforcementAppliedAsync(target).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch
+                {
+                    // the next cycle retries; the host already logs ack failures
+                }
+            }
+
+            try
+            {
+                await Task.Delay(ReconcileInterval, _time, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
     /// <summary>End-to-end phone→laptop latency for the newest desired revision:
     /// server-corrected now minus the phone's server-stamped requestedAt. Null when
     /// unknown or implausible (clock skew guard).</summary>
@@ -613,8 +700,21 @@ public sealed class SyncEngine
         }
     }
 
-    private void HandleControlData(string? raw)
+    /// <remarks>Internal for tests: the reconcile-loop contract pins replay no-op behavior.</remarks>
+    internal void HandleControlData(string? raw)
     {
+        lock (_gate)
+        {
+            // Poll/reconnect replays of an unchanged node must not churn the secret
+            // store and dispatch machinery every reconcile cycle; only genuinely new
+            // raw content proceeds. (After a restart _currentControlRaw is null, so
+            // the first replay always re-durables the snapshot.)
+            if (raw != null && _pendingSnapshot != null && raw == _currentControlRaw)
+            {
+                return;
+            }
+        }
+
         var result = ControlProtocol.Parse(raw ?? "null");
         if (result.Status == ControlParseStatus.Valid && result.Snapshot != null)
         {
@@ -671,11 +771,21 @@ public sealed class SyncEngine
         Reject(ExtractRevisionId(raw), result.Error ?? "Invalid V2 control snapshot");
     }
 
-    private void HandleDesiredData(string? raw)
+    /// <remarks>Internal for tests: the reconcile-loop contract pins replay no-op behavior.</remarks>
+    internal void HandleDesiredData(string? raw)
     {
+        var parsed = ControlProtocol.ParseDesired(raw ?? "null");
         lock (_gate)
         {
-            _pendingDesired = ControlProtocol.ParseDesired(raw ?? "null");
+            // Reconcile replays of the same desired revision (or of "no desired")
+            // are no-ops; without this the 15s GET would bump the dispatch
+            // generation — aborting in-flight settle waits — every cycle.
+            if (parsed?.RevisionId == _pendingDesired?.RevisionId)
+            {
+                return;
+            }
+
+            _pendingDesired = parsed;
             _dispatchGeneration++;
             _pendingDesiredGen = _dispatchGeneration;
         }

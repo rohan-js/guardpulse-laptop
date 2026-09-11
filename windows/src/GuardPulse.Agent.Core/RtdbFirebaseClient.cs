@@ -548,6 +548,15 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
                 {
                     if (!response.IsSuccessStatusCode)
                     {
+                        // A rejected token must not pin the loop to the stale credential:
+                        // REST self-heals via InvalidateToken on 401, and so must the
+                        // stream loop, or it would reconnect forever with the same token
+                        // (blinding every stream behind healthy REST writes).
+                        if ((int)response.StatusCode == 401)
+                        {
+                            InvalidateToken();
+                        }
+
                         throw new HttpRequestException($"SSE stream {path} failed ({(int)response.StatusCode}).");
                     }
 

@@ -1006,6 +1006,25 @@ public sealed partial class AgentHostedService(
             {
                 await _syncEngine.StartAsync(ct);
                 _syncStarted = true;
+                // Publish the new session id immediately: the rules validate an ack's
+                // sessionId against sync/runtime, and the first heartbeat (30s away)
+                // would otherwise leave the stale old session id there — the first
+                // ack after every restart would burn its retry budget and strand the
+                // parent on "Waiting for laptop" until the next control write.
+                try
+                {
+                    var runtime = new JsonObject
+                    {
+                        ["sessionId"] = _syncEngine.SessionId,
+                        ["protocolVersion"] = 2
+                    };
+                    await _firebase.PatchAsync(FirebasePaths.DeviceSyncRuntime(_deviceId), runtime.ToJsonString(JsonOpts), ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "startup sync/runtime write failed; heartbeat will retry");
+                }
+
                 _logger.LogInformation("Sync engine started (session {SessionId})", _syncEngine.SessionId);
             }
             catch (Exception ex)

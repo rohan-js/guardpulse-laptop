@@ -68,6 +68,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -163,6 +164,26 @@ internal fun isPendingUnlock(request: UnlockRequest, now: Long): Boolean {
 }
 
 
+/// <summary>
+/// state.serverNow only refreshes when the laptop's sync/runtime listener fires, so a
+/// laptop that stops writing runtime (stalled agent, disabled service) freezes the
+/// freshness clock near zero age forever — the card then shows "Waiting for laptop"
+/// for a device that is really offline. Derive the freshness clock from the last
+/// known server offset and tick it locally instead.
+/// </summary>
+@Composable
+private fun rememberServerTickingNow(serverNow: Long): Long {
+    val offset = remember(serverNow) { serverNow - System.currentTimeMillis() }
+    var now by remember(serverNow) { mutableStateOf(serverNow) }
+    LaunchedEffect(offset) {
+        while (true) {
+            now = System.currentTimeMillis() + offset
+            delay(5_000L)
+        }
+    }
+    return now
+}
+
 @Composable
 internal fun SyncHealthCard(
     state: ParentSyncUiState,
@@ -172,7 +193,7 @@ internal fun SyncHealthCard(
     val selectedDevice = state.devices.firstOrNull { it.deviceId == state.selectedDeviceId }
     val protocolReady = state.syncRuntime.protocolVersion >= PolicyConstants.SYNC_PROTOCOL_VERSION
     val tvConnected = if (protocolReady) state.syncRuntime.connected else selectedDevice?.online == true
-    val freshness = ControlProtocol.freshness(tvConnected, selectedDevice?.lastSeen, state.serverNow)
+    val freshness = ControlProtocol.freshness(tvConnected, selectedDevice?.lastSeen, rememberServerTickingNow(state.serverNow))
     val desired = state.desiredRevision
     val applied = state.appliedRevision
     val syncStatus = deriveSyncStatus(

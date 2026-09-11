@@ -190,6 +190,13 @@ internal fun AppsTab(
                 confirmedStates = confirmedStates
             )
             val pending = syncState.isAppPolicyPending(app.packageName)
+            // The agent's runtime entry predates the current desired revision: this
+            // app's rule was part of a parent write the laptop has not confirmed at
+            // that revision yet (ack in flight, upload lag, or an unapplied change).
+            // The chip must not claim the runtime state as truth for such a row.
+            val staleRuntime = syncState.desiredControl?.apps?.containsKey(app.packageName) == true &&
+                confirmedState.controlRevisionId != null &&
+                syncState.desiredControl?.revisionId != confirmedState.controlRevisionId
             val requestedPolicy = syncState.desiredControl?.apps?.get(app.packageName)?.let { rule ->
                 ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes, rule.sessionLimitMinutes)
             }
@@ -199,6 +206,7 @@ internal fun AppsTab(
                 confirmedState,
                 liveState,
                 pending,
+                staleRuntime,
                 requestedPolicy,
                 serverNow,
                 onUpdatePolicy,
@@ -216,6 +224,7 @@ internal fun AppPolicyCard(
     state: ParentState,
     usageState: ParentState,
     pending: Boolean,
+    staleRuntime: Boolean,
     requestedPolicy: ParentPolicy?,
     serverNow: Long,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
@@ -252,6 +261,11 @@ internal fun AppPolicyCard(
     val blocked = networkBlocked || lockBlocked
     val statusLabel = when {
         pending -> "Waiting for laptop"
+        // Runtime confirmed at an older revision than the app's desired rule: the
+        // laptop has not applied this app's pending change, so "App allowed/locked"
+        // would report a stale state as truth (the Chrome case: blocked from the
+        // phone, laptop never received it, kid keeps browsing).
+        staleRuntime -> "Waiting for laptop"
         !app.blockable -> "Protected"
         sourceLocked -> "Live TV locked"
         settingsSectionsLocked -> "$settingsSectionName locked"
@@ -264,7 +278,7 @@ internal fun AppPolicyCard(
         else -> "App allowed"
     }
     val statusColor = when {
-        pending -> ActionBlue
+        pending || staleRuntime -> ActionBlue
         !app.blockable -> OutlineSoft
         blocked -> AlertRed
         else -> ActionBlue
@@ -330,6 +344,8 @@ internal fun AppPolicyCard(
                 val reason = when {
                     pending && requestedPolicy?.manualBlocked == true -> "Lock requested; laptop confirmation pending"
                     pending -> "Unlock or limit change requested; laptop confirmation pending"
+                    staleRuntime && requestedPolicy?.manualBlocked == true -> "Lock requested; laptop has not applied it yet"
+                    staleRuntime && requestedPolicy != null -> "Change requested; laptop has not applied it yet"
                     !app.blockable -> "Reason: ${app.protectedReason ?: "System critical"}"
                     sourceLocked && state.dailyLimitBlocked -> "Daily limit source lock"
                     sourceLocked && policy.manualBlocked -> "Live TV source locked by parent"
