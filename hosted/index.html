@@ -376,9 +376,17 @@ const auth = {
     throw new Error("Not signed in.");
   },
   async doRefresh(){
-    const res = await fetch(TOKEN_URL, { method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(this.refreshToken) + "&returnSecureToken=true" });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12000);
+    let res;
+    try {
+      res = await fetch(TOKEN_URL, { method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(this.refreshToken) + "&returnSecureToken=true",
+        signal: ctl.signal });
+    } catch (e){
+      throw new Error((e && e.name === "AbortError") ? "Token refresh timed out (12s)" : (e.message || "Token refresh failed"));
+    } finally { clearTimeout(timer); }
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !j.id_token) throw new Error((j.error && j.error.message) || "Token refresh failed");
     this.idToken = j.id_token; this.refreshToken = j.refresh_token; this.uid = j.user_id;
@@ -386,11 +394,19 @@ const auth = {
     try { localStorage.setItem("gp.refresh", this.refreshToken); } catch (e) { /* private mode */ }
   },
   async signUp(email, password){
-    const res = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + FB.apiKey, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, returnSecureToken: true }),
-    });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12000);
+    let res;
+    try {
+      res = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + FB.apiKey, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+        signal: ctl.signal,
+      });
+    } catch (e){
+      throw new Error((e && e.name === "AbortError") ? "Account creation timed out (12s)" : (e.message || "Account creation failed"));
+    } finally { clearTimeout(timer); }
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !j.idToken) throw new Error((j.error && j.error.message) || "Account creation failed");
     this.uid = j.localId; this.idToken = j.idToken; this.refreshToken = j.refreshToken;
@@ -399,9 +415,17 @@ const auth = {
     return this.uid;
   },
   async signIn(email, password){
-    const res = await fetch(AUTH_URL, { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, returnSecureToken: true }) });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12000);
+    let res;
+    try {
+      res = await fetch(AUTH_URL, { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+        signal: ctl.signal });
+    } catch (e){
+      throw new Error((e && e.name === "AbortError") ? "Sign-in timed out (12s)" : (e.message || "Sign-in failed"));
+    } finally { clearTimeout(timer); }
     const j = await res.json().catch(() => ({}));
     if (!res.ok || !j.idToken) throw new Error((j.error && j.error.message) || "Sign-in failed");
     this.uid = j.localId; this.idToken = j.idToken; this.refreshToken = j.refreshToken;
@@ -1186,15 +1210,21 @@ function reportError(where, err){
   toast(line.slice(0, 160));
 }
 let lastErrorRecord = null;
-function setBusy(on){ document.body.classList.toggle("busy", on); }
+let busyAction = null;
+function setBusy(on, name){ busyAction = on ? (name || "action") : null; document.body.classList.toggle("busy", on); }
+function busyActionName(){ return busyAction || "unknown"; }
 function busyOn(){ return document.body.classList.contains("busy"); }
 function withBusy(fn){
+  const name = (fn.name || "action").replace(/^bound /, "");
   return async (...args) => {
-    if (busyOn()){ toast("Another action is still running — try again in a moment."); return; }
-    setBusy(true);
-    const watchdog = setTimeout(() => { reportError("busy-watchdog", new Error("An action has been running for 45s — releasing the busy lock.")); setBusy(false); }, 45000);
+    if (busyOn()){
+      reportError("busy-gate", new Error("Another action is still running: " + busyActionName() + " — your " + name + " was not sent. Wait a few seconds and try again."));
+      return;
+    }
+    setBusy(true, name);
+    const watchdog = setTimeout(() => { reportError("stuck-action", new Error("'" + busyActionName() + "' ran past 20s — releasing it. If writes keep failing, check your connection.")); setBusy(false); }, 20000);
     try { await fn(...args); }
-    catch (e){ reportError("action", e); }
+    catch (e){ reportError(name, e); }
     finally { clearTimeout(watchdog); setBusy(false); }
   };
 }
@@ -1365,6 +1395,7 @@ function copyDiag(){
     d.build = BUILD;
     d.userAgent = navigator.userAgent;
     d.lastError = lastErrorRecord || null;
+    d.busy = busyOn() ? busyActionName() : null;
     d.signedInAt = auth.expiresAt ? new Date(auth.expiresAt).toISOString() : null;
     d.pollFailures = pollFailures;
     d.lastRefresh = lastStateRefresh ? new Date(lastStateRefresh).toLocaleTimeString() : "never";
