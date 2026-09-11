@@ -854,6 +854,38 @@ test("parent writes custom blocked domains with valid domains and paths only", a
   );
 });
 
+test("parent manages custom sites registry; laptop cannot write it", async () => {
+  // Owner writes the registry (every site ever added, blocked or not).
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/customSites").set({
+      "0": "example.com",
+      "1": "youtube.com/shorts",
+    })
+  );
+
+  // Toggle-off/remove flow: rewrite the list minus an entry, or clear it.
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/customSites").set({ "0": "example.com" })
+  );
+  await assertSucceeds(dbAs("parentUid").ref("devices/tv1/customSites").remove());
+
+  // The phone owns this node — the laptop (tvUid) must not write it.
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/customSites").set({ "0": "example.com" })
+  );
+
+  // Same entry validation as customBlockedDomains: no scheme, no junk, <= 253.
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/customSites").set({ "0": "https://example.com" })
+  );
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/customSites").set({ "0": "not a domain" })
+  );
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/customSites").set({ "0": "a".repeat(254) + ".com" })
+  );
+});
+
 // RTDB keys cannot contain "." (nor "$#[]/"), so domainsToday domain keys
 // arrive encoded — same convention as the base64 app keys used above
 // (Z2l0aHViLmNvbQ === base64("github.com"), eW91dHViZS5jb20 === base64("youtube.com")).

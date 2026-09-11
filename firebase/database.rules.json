@@ -580,6 +580,13 @@
               ".validate": false
             }
           }
+        },
+        "customSites": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+          ".validate": "!newData.exists() || newData.hasChildren()",
+          "$idx": {
+            ".validate": "newData.isString() && newData.val().matches(/^([A-Za-z0-9]([A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,}(\\/[A-Za-z0-9\\-_\\.\\?\\=\\&\\/\\%]*)?$/) && newData.val().length <= 253"
+          }
         }
       }
     },

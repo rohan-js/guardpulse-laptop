@@ -237,6 +237,8 @@ data class ParentSyncUiState(
     val loadingDeviceDetails: Boolean = false,
     // Live browser tab snapshot from this laptop's agent (null when nothing captured).
     val browser: BrowserState? = null,
+    // Phone-owned registry of every custom site ever added on this device (blocked or not).
+    val customSites: List<String> = emptyList(),
     val message: String? = null
 )
 

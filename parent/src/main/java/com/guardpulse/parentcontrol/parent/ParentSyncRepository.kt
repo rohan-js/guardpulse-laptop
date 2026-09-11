@@ -41,6 +41,7 @@ class ParentSyncRepository(private val database: DatabaseReference) {
             error: String? = null
         )
         fun onBrowser(value: BrowserState?)
+        fun onCustomSites(value: List<String>)
         fun onError(message: String)
     }
 
@@ -303,6 +304,10 @@ class ParentSyncRepository(private val database: DatabaseReference) {
         observe(ParentBrowserPaths.deviceStateBrowser(deviceId), observer) { snapshot ->
             val map = snapshot.value as? Map<Any?, Any?> ?: emptyMap()
             observer.onBrowser(BrowserState.fromMap(map))
+        }
+        observe(deviceCustomSitesPath(deviceId), observer) { snapshot ->
+            val domains = snapshot.children.mapNotNull { it.getValue(String::class.java) }
+            observer.onCustomSites(domains)
         }
         observe(FirebasePaths.deviceSecurityRuntime(deviceId), observer) { snapshot ->
             observer.onSecurity(snapshot.securityRuntime())

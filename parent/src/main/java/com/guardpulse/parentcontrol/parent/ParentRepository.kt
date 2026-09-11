@@ -17,6 +17,9 @@ internal fun encodedPolicyValues(
     PackageKeys.encode(packageName) to valueFactory(packageName, policy)
 }.toMap()
 
+/** Phone-owned registry node of every custom site ever added (read by the card, never by the laptop). */
+internal fun deviceCustomSitesPath(deviceId: String) = "devices/$deviceId/customSites"
+
 class ParentRepository(
     private val database: DatabaseReference,
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
@@ -168,10 +171,17 @@ class ParentRepository(
         }
     }
 
-    /** Custom blocked domains (hosts-file): e.g. youtube.com. Empty clears it. */
+    /**
+     * Custom blocked domains (hosts-file): e.g. youtube.com. Empty clears it.
+     * [registry] is the phone-owned list of every custom site ever added, blocked or
+     * not (devices/{id}/customSites) — it lands in the SAME atomic updateChildren as
+     * the enforcement write so a site can never be half-remembered: blocked-but-
+     * unregistered or registered-but-unsynced.
+     */
     fun updateCustomBlockedDomains(
         deviceId: String,
         domains: List<String>,
+        registry: List<String>? = null,
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
@@ -180,8 +190,20 @@ class ParentRepository(
             onError("Too many domains (max 100)")
             return
         }
+        val registryDistinct = registry
+            ?.map { it.trim().lowercase() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            .orEmpty()
+        if (registryDistinct.size > 100) {
+            onError("Too many sites tracked (max 100)")
+            return
+        }
         controlUpdate(deviceId, PolicyConstants.REVISION_CUSTOM_DOMAINS, "customBlockedDomains", onSuccess, onError) { updates ->
             updates[FirebasePaths.deviceControlV2CustomBlockedDomains(deviceId)] = if (distinct.isEmpty()) null else distinct
+            if (registry != null) {
+                updates[deviceCustomSitesPath(deviceId)] = registryDistinct.takeIf { it.isNotEmpty() }
+            }
         }
     }
 

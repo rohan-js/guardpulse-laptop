@@ -222,7 +222,7 @@ private fun ParentDashboard(
     onStopSafeMode: () -> Unit,
     onUpdateBudget: (Int?) -> Unit,
     onUpdateAllowlist: (Boolean) -> Unit,
-    onUpdateCustomBlockedDomains: (List<String>) -> Unit,
+    onUpdateCustomBlockedDomains: (List<String>, List<String>) -> Unit,
     onRescan: () -> Unit,
     onOpenTvSetup: () -> Unit,
     onResetToday: (String) -> Unit,

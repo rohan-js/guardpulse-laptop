@@ -116,36 +116,81 @@ internal fun normalizeCustomDomainForUi(raw: String): String? {
 @Composable
 private fun CustomBlockedSitesCard(
     syncState: ParentSyncUiState,
-    onUpdateCustomBlockedDomains: (List<String>) -> Unit,
+    onUpdateCustomBlockedDomains: (List<String>, List<String>) -> Unit,
     onConfirmAction: (String, String, String, Boolean, () -> Unit) -> Unit
 ) {
     val customControlsEnabled = syncState.controlAvailability == ControlAvailability.VALID
     val currentCustom = syncState.confirmedControl?.customBlockedDomains ?: syncState.desiredControl?.customBlockedDomains
-    var customInput by remember(currentCustom) { mutableStateOf("") }
-    var customDomains by remember(currentCustom) { mutableStateOf(currentCustom?.domains ?: emptyList()) }
+    val blockedDomains = currentCustom?.domains ?: emptyList()
+    // Registry = every site ever added (blocked or not); display the union so old
+    // blocklists show up even before the registry node exists.
+    val knownSites = (syncState.customSites + blockedDomains).distinct().sorted()
+    var customInput by remember { mutableStateOf("") }
     val normalizedInput = remember(customInput) { normalizeCustomDomainForUi(customInput) }
-    val canAdd = customControlsEnabled && normalizedInput != null && normalizedInput !in customDomains && customDomains.size < 100
+    val canAdd = customControlsEnabled && normalizedInput != null && normalizedInput !in knownSites && knownSites.size < 100
     GuardCard {
         Text("Custom Blocked Sites & URLs", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
-        Text("Block specific websites and URL paths (e.g. youtube.com or youtube.com/shorts). Works across all browsers. Max 100.", color = TextMuted, modifier = Modifier.padding(top = 6.dp))
-        if (currentCustom != null && currentCustom.domains.isNotEmpty()) {
-            Text("Current: ${currentCustom.domains.joinToString(", ")}", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
-        } else {
-            Text("Current: none", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            "Block specific websites and URL paths (e.g. youtube.com or youtube.com/shorts). Works across all browsers. Max 100. Toggle a site off to keep it saved without blocking.",
+            color = TextMuted,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+        if (knownSites.isEmpty()) {
+            Text("No sites yet. Add one below — you can flip its block toggle any time.", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
         }
-        if (customDomains.isNotEmpty()) {
-            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-            androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                customDomains.forEach { domain -> AssistChip(onClick = { customDomains = customDomains.filter { it != domain } }, label = { Text(domain) }, trailingIcon = { Icon(Icons.Outlined.Close, contentDescription = "Remove $domain", modifier = Modifier.size(16.dp)) }) } }
+        knownSites.forEach { domain ->
+            val isBlocked = domain in blockedDomains
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(domain, color = GuardNavy, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (isBlocked) "Blocked" else "Saved · not blocked",
+                        color = if (isBlocked) AlertRed else TextMuted,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                IconButton(onClick = { onUpdateCustomBlockedDomains(blockedDomains - domain, knownSites - domain) }, enabled = customControlsEnabled) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Remove $domain", tint = TextMuted, modifier = Modifier.size(18.dp))
+                }
+                Switch(
+                    checked = isBlocked,
+                    onCheckedChange = { block ->
+                        val next = if (block) (blockedDomains + domain).distinct() else blockedDomains - domain
+                        onUpdateCustomBlockedDomains(next, knownSites)
+                    },
+                    enabled = customControlsEnabled
+                )
+            }
         }
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = customInput, onValueChange = { customInput = it.lowercase().filter { ch -> ch in 'a'..'z' || ch in '0'..'9' || ch == '.' || ch == '-' || ch == '/' || ch == ':' }.take(253) }, label = { Text("Add domain") }, placeholder = { Text("youtube.com") }, enabled = customControlsEnabled, singleLine = true, modifier = Modifier.weight(1f))
-            Button(onClick = { val n = normalizedInput; if (n != null && n !in customDomains && customDomains.size < 100) { customDomains = customDomains + n; customInput = "" } }, enabled = canAdd, colors = ButtonDefaults.buttonColors(containerColor = GuardNavy), modifier = Modifier.height(58.dp)) { Icon(Icons.Outlined.Add, contentDescription = null); Spacer(Modifier.width(4.dp)); Text("Add") }
+            Button(
+                onClick = {
+                    val n = normalizedInput ?: return@Button
+                    customInput = ""
+                    onUpdateCustomBlockedDomains((blockedDomains + n).distinct(), knownSites + n)
+                },
+                enabled = canAdd,
+                colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
+                modifier = Modifier.height(58.dp)
+            ) { Icon(Icons.Outlined.Add, contentDescription = null); Spacer(Modifier.width(4.dp)); Text("Add") }
         }
-        if (customDomains.size >= 100) Text("Maximum 100 domains.", color = AlertRed, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { val pending = normalizedInput; val finalDomains = if (pending != null && pending !in customDomains && customDomains.size < 100) customDomains + pending else customDomains; if (pending != null && pending !in customDomains && customDomains.size < 100) { customDomains = finalDomains; customInput = "" }; onConfirmAction("Update blocked sites?", if (finalDomains.isEmpty()) "All custom site blocks will be removed." else "Blocked: ${finalDomains.joinToString(", ")}", "Save", false) { onUpdateCustomBlockedDomains(finalDomains) } }, enabled = customControlsEnabled, colors = ButtonDefaults.buttonColors(containerColor = GuardNavy), shape = RoundedCornerShape(50), modifier = Modifier.weight(1f).height(52.dp)) { Text("Save") }
-            OutlinedButton(onClick = { customDomains = emptyList(); onUpdateCustomBlockedDomains(emptyList()) }, enabled = customControlsEnabled && (currentCustom?.domains?.isNotEmpty() == true || customDomains.isNotEmpty()), modifier = Modifier.weight(1f).height(52.dp)) { Text("Clear") }
+        if (knownSites.size >= 100) Text("Maximum 100 sites.", color = AlertRed, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+        if (knownSites.isNotEmpty()) {
+            TextButton(
+                onClick = {
+                    onConfirmAction(
+                        "Remove all custom sites?",
+                        "Every saved site will be forgotten and unblocked.",
+                        "Clear all",
+                        false
+                    ) { onUpdateCustomBlockedDomains(emptyList(), emptyList()) }
+                },
+                enabled = customControlsEnabled
+            ) { Text("Clear all", color = AlertRed, style = MaterialTheme.typography.labelMedium) }
         }
         if (!customControlsEnabled) Text("Synchronized control unavailable - changes are disabled.", color = AlertRed, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
     }
@@ -319,7 +364,7 @@ internal fun SecurityTab(
     onStopSafeMode: () -> Unit,
     onUpdateBudget: (Int?) -> Unit,
     onUpdateAllowlist: (Boolean) -> Unit,
-    onUpdateCustomBlockedDomains: (List<String>) -> Unit,
+    onUpdateCustomBlockedDomains: (List<String>, List<String>) -> Unit,
     onConfirmAction: (String, String, String, Boolean, () -> Unit) -> Unit,
     onOpenTvSetup: () -> Unit,
     onReconnect: () -> Unit,

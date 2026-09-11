@@ -30,7 +30,7 @@ private sealed interface ControlOperation {
     data object StopSafeMode : ControlOperation
     data class UpdateBudget(val dailyLimitMinutes: Int?) : ControlOperation
     data class UpdateAllowlist(val enabled: Boolean) : ControlOperation
-    data class UpdateCustomBlockedDomains(val domains: List<String>) : ControlOperation
+    data class UpdateCustomBlockedDomains(val domains: List<String>, val registry: List<String>) : ControlOperation
 }
 
 class ParentSyncViewModel(application: Application) : AndroidViewModel(application) {
@@ -260,10 +260,12 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         submitControlOperation(ControlOperation.UpdateAllowlist(enabled))
     }
 
-    fun updateCustomBlockedDomains(domains: List<String>) {
+    /** Blocked domains ride the revision pipeline; [registry] (every site ever added) lands in the same atomic write. */
+    fun updateCustomBlockedDomains(domains: List<String>, registry: List<String> = emptyList()) {
         state.value.selectedDeviceId ?: return setMessage("Select a TV first")
         if (domains.size > 100) return setMessage("Too many domains (max 100)")
-        submitControlOperation(ControlOperation.UpdateCustomBlockedDomains(domains))
+        if (registry.size > 100) return setMessage("Too many sites tracked (max 100)")
+        submitControlOperation(ControlOperation.UpdateCustomBlockedDomains(domains, registry.distinct()))
     }
 
     fun sendCommand(type: String, packageName: String? = null) {
@@ -482,6 +484,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
             override fun onTamperEvents(value: List<TamperEvent>) = setState { it.copy(tamperEvents = value) }
             override fun onCommands(value: List<ParentCommand>) = setState { it.copy(commands = value) }
             override fun onBrowser(value: BrowserState?) = setState { it.copy(browser = value) }
+            override fun onCustomSites(value: List<String>) = setState { it.copy(customSites = value) }
             override fun onActivityCurrent(value: DeviceActivity?) = setState { it.copy(activityCurrent = value) }
             override fun onActivityHistory(value: List<ActivityHistoryEntry>) = setState { it.copy(activityHistory = value) }
 
@@ -576,6 +579,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 states = emptyMap(),
                 confirmedStates = emptyMap(),
                 browser = null,
+                customSites = emptyList(),
                 modes = emptyList(),
                 activeMode = ActiveMode(),
                 safeMode = SafeModeState(),
@@ -610,6 +614,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 states = emptyMap(),
                 confirmedStates = emptyMap(),
                 browser = null,
+                customSites = emptyList(),
                 modes = emptyList(),
                 activeMode = ActiveMode(),
                 safeMode = SafeModeState(),
@@ -798,7 +803,13 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
             is ControlOperation.UpdateAllowlist ->
                 repository.updateAllowlist(deviceId, operation.enabled, ::controlSent, ::setMessage)
             is ControlOperation.UpdateCustomBlockedDomains ->
-                repository.updateCustomBlockedDomains(deviceId, operation.domains, ::controlSent, ::setMessage)
+                repository.updateCustomBlockedDomains(
+                    deviceId,
+                    operation.domains,
+                    operation.registry,
+                    ::controlSent,
+                    ::setMessage
+                )
         }
     }
 
