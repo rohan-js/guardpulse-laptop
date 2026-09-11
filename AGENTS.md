@@ -178,10 +178,10 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ## 11. CURRENT STATE (2026-09-11 — supersedes §6)
 
-* Head **`6fcb9c6`** (0.2.39: custom-sites persistent block toggle + remove), pushed. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.38.exe` (folds in 0.2.37's uninstaller .msg fix + net start retry — 0.2.39 changed phone/rules only, no agent). Phone APK: `release-apk/LAPTOP-PARENT-0.2.39-release.apk`. Rules: `customSites` registry node deployed live to SG.
+* Head **`0.2.40`** (custom-sites toggle OFF = blocked + remove confirmation), pushed. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.38.exe` (folds in 0.2.37's uninstaller .msg fix + net start retry — 0.2.39/0.2.40 changed phone/rules only, no agent). Phone APK: `release-apk/LAPTOP-PARENT-0.2.40-release.apk` (0.2.39 was never installed on the phone — skip it). Rules: `customSites` registry node deployed live to SG.
 * **Both laptops are live-stalled** (confirmed in SG DB 09-11): heartbeats/state/messages flowing, `sync/applied` frozen hours behind `sync/desired` — SSE keep-alives mask a dead event-delivery. The 0.2.38 reconcile loop fixes it; **reinstall on both machines pending** (kid laptop `0d3fc12f…` runs 0.2.36; dev machine `232a64da…` runs 0.2.35 and its service is RUNNING again — user re-enabled it 09-11 for testing).
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
-* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to 0.2.39 (honest sync status + truthful chips + custom-sites toggles).
+* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to **0.2.40** (honest sync status + truthful chips + custom-sites toggles: ON = allowed, OFF = blocked; x-removal asks first).
 * Tests green at ship: dotnet 278 (140 Protocol + 138 Core incl. InstallerScriptTests + SyncEngineReconcileTests), rules 47 (`npm --prefix firebase run test:rules`).
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)

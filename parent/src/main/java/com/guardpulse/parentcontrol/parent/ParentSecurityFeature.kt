@@ -131,12 +131,12 @@ private fun CustomBlockedSitesCard(
     GuardCard {
         Text("Custom Blocked Sites & URLs", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
         Text(
-            "Block specific websites and URL paths (e.g. youtube.com or youtube.com/shorts). Works across all browsers. Max 100. Toggle a site off to keep it saved without blocking.",
+            "Block specific websites and URL paths (e.g. youtube.com or youtube.com/shorts). Works across all browsers. Max 100. Toggle off = blocked; the site stays saved so you can flip it back any time.",
             color = TextMuted,
             modifier = Modifier.padding(top = 6.dp)
         )
         if (knownSites.isEmpty()) {
-            Text("No sites yet. Add one below — you can flip its block toggle any time.", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+            Text("No sites yet. Add one below — it starts blocked; use its toggle to allow it.", color = TextMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
         }
         knownSites.forEach { domain ->
             val isBlocked = domain in blockedDomains
@@ -147,18 +147,29 @@ private fun CustomBlockedSitesCard(
                 Column(Modifier.weight(1f)) {
                     Text(domain, color = GuardNavy, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        if (isBlocked) "Blocked" else "Saved · not blocked",
+                        if (isBlocked) "Blocked" else "Allowed",
                         color = if (isBlocked) AlertRed else TextMuted,
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
-                IconButton(onClick = { onUpdateCustomBlockedDomains(blockedDomains - domain, knownSites - domain) }, enabled = customControlsEnabled) {
+                IconButton(
+                    onClick = {
+                        onConfirmAction(
+                            "Remove $domain?",
+                            "It will be forgotten and unblocked. You can add it back anytime.",
+                            "Remove",
+                            false
+                        ) { onUpdateCustomBlockedDomains(blockedDomains - domain, knownSites - domain) }
+                    },
+                    enabled = customControlsEnabled
+                ) {
                     Icon(Icons.Outlined.Close, contentDescription = "Remove $domain", tint = TextMuted, modifier = Modifier.size(18.dp))
                 }
+                // Allow switch, same convention as the Apps tab: ON = allowed, OFF = blocked.
                 Switch(
-                    checked = isBlocked,
-                    onCheckedChange = { block ->
-                        val next = if (block) (blockedDomains + domain).distinct() else blockedDomains - domain
+                    checked = !isBlocked,
+                    onCheckedChange = { allowed ->
+                        val next = if (allowed) blockedDomains - domain else (blockedDomains + domain).distinct()
                         onUpdateCustomBlockedDomains(next, knownSites)
                     },
                     enabled = customControlsEnabled
