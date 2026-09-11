@@ -245,6 +245,7 @@
   <span class="brand"><span class="logo-img logo-28"></span><b>GuardPulse</b></span>
   <span id="hdrScope" class="small"></span>
   <span class="spacer"></span>
+  <span id="lastErr" class="err small hidden" title="Last error — click Diagnostics for details"></span>
   <button id="btnBack" class="ghost hidden" onclick="goBack()">&#8592; Devices</button>
   <button id="btnDiag" class="ghost hidden" onclick="copyDiag()" title="Copy troubleshooting info">Diagnostics</button>
   <button id="btnHome" class="ghost" onclick="goHome()">Home</button>
@@ -1170,16 +1171,35 @@ function show(id){
 }
 function showModal(id, on){ $(id).classList.toggle("hidden", !on); }
 function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3200); }
+const BUILD = "2026-09-11.3";
+function reportError(where, err){
+  const msg = (err && (err.message || err.error)) ? (err.message || err.error) : String(err);
+  const line = "[" + where + "] " + msg;
+  console.error(line, err);
+  try {
+    const el = $("lastErr");
+    el.textContent = line.slice(0, 140);
+    el.classList.remove("hidden");
+    el.onclick = () => { el.classList.add("hidden"); };
+    lastErrorRecord = { at: new Date().toLocaleTimeString(), line, build: BUILD };
+  } catch (e){ /* ignore */ }
+  toast(line.slice(0, 160));
+}
+let lastErrorRecord = null;
 function setBusy(on){ document.body.classList.toggle("busy", on); }
 function busyOn(){ return document.body.classList.contains("busy"); }
 function withBusy(fn){
   return async (...args) => {
-    if (busyOn()) return;
+    if (busyOn()){ toast("Another action is still running — try again in a moment."); return; }
     setBusy(true);
+    const watchdog = setTimeout(() => { reportError("busy-watchdog", new Error("An action has been running for 45s — releasing the busy lock.")); setBusy(false); }, 45000);
     try { await fn(...args); }
-    finally { setBusy(false); }
+    catch (e){ reportError("action", e); }
+    finally { clearTimeout(watchdog); setBusy(false); }
   };
 }
+window.addEventListener("error", e => reportError("window", e.error || e.message));
+window.addEventListener("unhandledrejection", e => reportError("promise", e.reason));
 function fmtMs(ms){
   if (!ms || ms < 1000) return "0s";
   const total = Math.floor(ms / 1000);
@@ -1342,6 +1362,10 @@ function copyDiag(){
       }
     }
     d.uid = auth.uid;
+    d.build = BUILD;
+    d.userAgent = navigator.userAgent;
+    d.lastError = lastErrorRecord || null;
+    d.signedInAt = auth.expiresAt ? new Date(auth.expiresAt).toISOString() : null;
     d.pollFailures = pollFailures;
     d.lastRefresh = lastStateRefresh ? new Date(lastStateRefresh).toLocaleTimeString() : "never";
     const txt = JSON.stringify(d, null, 1);
@@ -1408,8 +1432,8 @@ async function refreshState(silent){
     // Silent for the single-poll case, but repeated failures must be VISIBLE —
     // a tab silently stuck on old data looks exactly like a wrong lock state.
     pollFailures++;
-    if (pollFailures === 3) toast("Live updates are failing — the data shown may be stale. Retrying…");
-    if (!silent) toast("Refresh failed: " + (e.message || ""));
+    if (pollFailures === 3) reportError("live updates", new Error("repeated refresh failures — data shown may be stale"));
+    if (!silent) reportError("refresh", e);
   }
 }
 
@@ -1580,8 +1604,8 @@ function appRule(key, blocked, limit){ return appRuleFor(key, pkgOf(key), blocke
 
 const savePatch = withBusy(async (patch, kind, target, extraPaths) => {
   const w = await writeControl(SCOPE.deviceId, patch, kind, target, extraPaths);
-  if (w.ok){ noteWritten(w.revisionId); }
-  else { toast("Error: " + (w.error || "failed")); }
+  if (w.ok){ noteWritten(w.revisionId); toast("Sent to laptop — waiting for confirmation…"); }
+  else { reportError("control write", new Error(w.error || "write failed")); }
   maybeRender();
 });
 function curApp(key){ return (STATE.apps || []).find(x => x.key === key) || null; }
@@ -1762,7 +1786,7 @@ async function devicePost(action, body, label){
     else if (action === "unlock-respond") await respondUnlock(SCOPE.deviceId, body.requestId, body.action);
     toast((label || action) + " sent");
   } catch (e){
-    toast((label || action) + " failed: " + (e.message || ""));
+    reportError(label || action, e);
   }
 }
 const rescanApps = withBusy(async () => { await devicePost("command", { type: "rescanApps" }, "Rescan"); });

@@ -137,6 +137,8 @@ const sandbox = {
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
+sandbox.addEventListener = function(){};
+sandbox.removeEventListener = function(){};
 vm.createContext(sandbox);
 vm.runInContext(js, sandbox, { filename: "index.html<script>" });
 const GP = sandbox.window.GP;
