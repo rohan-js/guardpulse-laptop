@@ -1265,8 +1265,16 @@ function stateKey(){
   return JSON.stringify(copy) + "|" + (pendingRevision || "");
 }
 function editingBlocked(){
+  // Only TEXT-like inputs defer re-rendering (a rebuild would clobber in-progress
+  // typing). Toggles/checkboxes/selects are safe to rebuild - deferring on them
+  // froze the whole console after every switch flip (focus stays on the switch),
+  // which looked exactly like "lock/unlock not working".
   const el = document.activeElement;
-  return !!el && $("app").contains(el) && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
+  if (!el || !$("app").contains(el)) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") return !(el.type === "checkbox" || el.type === "radio");
+  if (el.tagName === "SELECT") return true;
+  return false;
 }
 function maybeRender(){
   if (!STATE) return;
