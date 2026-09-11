@@ -183,6 +183,7 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
 * The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to **0.2.40** (honest sync status + truthful chips + custom-sites toggles: ON = allowed, OFF = blocked; x-removal asks first).
 * Tests green at ship: dotnet 278 (140 Protocol + 138 Core incl. InstallerScriptTests + SyncEngineReconcileTests), rules 47 (`npm --prefix firebase run test:rules`).
+* **Hosted web console LIVE at `https://guardpulse-laptop-sg.web.app`** (runbook in §15) — full phone-parity rebuild; the old Cloudflare `guardpulse-console.pages.dev` deployment is STALE (pre-0.2.13 code + legacy US database) and can be deleted in the Cloudflare dashboard.
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)
 
@@ -211,3 +212,13 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 3. Inno 6.3.3 uninstaller = exe + dat + **msg** sidecar; renaming an uninstaller must move all three or it dies at startup.
 4. An offline session agent can full-screen-wall the logged-on user from a stale policy-cache (fail-closed by design). On a dev box, disable the service instead of leaving a half-alive install.
 5. `sc query` on the hardened service DACL returns Access denied from a non-elevated shell — read `HKLM\SYSTEM\CurrentControlSet\Services\GuardPulseDeviceService` registry values instead (ImagePath/Start are world-readable).
+
+## 15. WEB CONSOLE — HOSTED DASHBOARD (2026-09-11)
+
+* **URL:** `https://guardpulse-laptop-sg.web.app` (Firebase Hosting, project `guardpulse-laptop-sg`). Sign in with the parent account (same credentials as the phone app; Create-account works too).
+* **Source:** single-file `hosted/index.html` (zero deps, no build — repo convention), talking to Firebase directly: Identity-Toolkit REST auth + RTDB REST, POLLING every 8s (SSE deadlocks Chrome's 6-connection cap — the old console's lesson).
+* **Deploy:** `MSYS_NO_PATHCONV=1 firebase deploy --only hosting --project guardpulse-laptop-sg` (`.firebaserc` default stays legacy-US for the rules guard — always pass `--project`).
+* **Tests:** `node hosted/harness.js` (43 checks: full script runs headless against a mock Firebase incl. multi-path PATCH semantics; pins deriveSyncStatus, write-pipeline bodies, legacy mirrors, custom-sites atomic write, PIN record, safeMode startedAt). `node hosted/e2e-live.js` = READ-ONLY live check (add `GP_EMAIL`/`GP_PASSWORD` env for the sign-in + device checks). Never write policies from the e2e.
+* **Write pipeline (critical):** every control write is ONE multi-path PATCH at `devices/{id}` carrying `control/v2` (full stamped snapshot) + `sync/desired` (same revisionId + kind) + the legacy mirror (`policy/apps` / `policy/modes` / `policy/activeMode` / `security/safeMode` / `security/pin`). Extra paths (customSites) are RELATIVE keys — absolute keys nest one level too deep and rules reject them.
+* **Phone parity shipped:** Synchronization card (7-state deriveSyncStatus + reconnect + repair-control), Protection health (security/runtime rows), Activity (now-on-laptop freshness/PIN-wall badge/session timer, weekly digest, history Today/7d/30d), Apps (Allow switch ON=allowed, daily+session limits with explicit-null clear, Waiting-for-laptop stale-runtime labels, reset-today), Custom sites (registry union, toggle OFF=blocked, ×+Clear-all confirms), Modes CRUD+activate+per-mode limits, Safe Mode (startedAt/startedBy — rules REQUIRE them when enabling), Budget (+Clear), Allowlist, Parent PIN (PBKDF2 210k), Pending unlock requests (deny/one-visit/15/30), openSetup, messages, pairing (payload/manual+code), gone-dark banners, tamper events. Schedule + content-filter UI intentionally NOT included (phone removed them; DB values untouched).
+* **Old dashboard history:** both dashboards were removed 0.2.13 (`43facc7`); the Cloudflare Pages project `guardpulse-console` kept serving the removed code pointed at the DEAD US database (sign-in breaks for SG accounts; any write would no-op silently). Audit verdicts: Safe-Mode-enable rejected by rules, app-limit clear silently ineffective, ack pipeline dead (no sync/desired), custom-sites registry absent. All fixed in this rebuild.
