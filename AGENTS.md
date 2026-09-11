@@ -176,13 +176,13 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ---
 
-## 11. CURRENT STATE (2026-09-10 — supersedes §6)
+## 11. CURRENT STATE (2026-09-11 — supersedes §6)
 
-* Head **`f2e675f`** (0.2.37: hidden uninstaller .msg sidecar fix + ssPostInstall net start retry), pushed, tree clean. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.37.exe`.
+* Head **`63c2808`** (0.2.38: heal stalled SSE sync — reconcile loop, honest sync status, truthful app rows), pushed. Installer: `windows/installer/Output/DeviceServiceSetup-0.2.38.exe` (folds in 0.2.37's uninstaller .msg fix + net start retry). Phone APK: `release-apk/LAPTOP-PARENT-0.2.38-release.apk`.
+* **Both laptops are live-stalled** (confirmed in SG DB 09-11): heartbeats/state/messages flowing, `sync/applied` frozen hours behind `sync/desired` — SSE keep-alives mask a dead event-delivery. The 0.2.38 reconcile loop fixes it; **reinstall on both machines pending** (kid laptop `0d3fc12f…` runs 0.2.36; dev machine `232a64da…` runs 0.2.35 and its service is RUNNING again — user re-enabled it 09-11 for testing).
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
-* Kid laptop LAPTOP-TGL3R3H8 still runs 0.2.36 (healthy since 09-10 11:23 IST) — **0.2.37 reinstall pending**; until then it has no working hidden uninstaller. Dev machine DESKTOP-4ILVI11 runs 0.2.35 with its service **deliberately disabled** — do NOT start it without asking.
-* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to see it.
-* Tests green at ship: dotnet 274 (140 Protocol + 134 Core incl. InstallerScriptTests), rules 47 (`npm --prefix firebase run test:rules`).
+* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to 0.2.38 to see the honest sync status + truthful app chips.
+* Tests green at ship: dotnet 278 (140 Protocol + 138 Core incl. InstallerScriptTests + SyncEngineReconcileTests), rules 47 (`npm --prefix firebase run test:rules`).
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)
 
@@ -194,12 +194,14 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 * Remote policy edit recipe (atomic, one PATCH at `/devices/{id}`): bump `control/v2/revisionId` (fresh push-style key) + `updatedAt` + `updatedBy`, set `control/v2/apps/<key>/manualBlocked`, and rewrite `sync/desired` with the same revisionId/kind/target/requestedAt/requestedBy. Agent applies in ~2 s and acks. Never edit without the parent's explicit ask.
 * Devices: `0d3fc12f…` kid laptop (live), `232a64da…` dev machine (paired, offline, service disabled), `f3834d1d…` old unpaired.
 
-## 13. 0.2.37 BACKLOG (ordered)
+## 13. 0.2.37/0.2.38 BACKLOG (ordered)
 
-1. ~~P0 — HideUninstaller `.msg` fix~~ **DONE in `f2e675f`**: sidecar renamed together with exe+dat (symmetric rollback, guarded by FileExists), InstallerScriptTests added, installer rebuilt as `DeviceServiceSetup-0.2.37.exe`. **Remaining: reinstall on the kid laptop** — until then it has no working hidden uninstaller.
-2. ~~`ssPostInstall` `net start` retry~~ **DONE in `f2e675f`** (one retry after a 3 s delay; the error dialog only shows if both attempts fail).
-3. Phone UX: dead-path app rows (exe absent on laptop) should read "not installed on laptop", not "App allowed".
-4. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10.
+1. ~~P0 — HideUninstaller `.msg` fix~~ **DONE in `f2e675f`** (shipped in the 0.2.38 installer).
+2. ~~`ssPostInstall` `net start` retry~~ **DONE in `f2e675f`** (shipped in the 0.2.38 installer).
+3. ~~Phone UX: dead-path app rows~~ **DONE in `63c2808`** (stale .lnk targets no longer create rows) together with the real Chrome-row bug: apps whose desired rule the laptop never applied now read "Waiting for laptop", not "App allowed".
+4. **P0 — Reinstall 0.2.38 on BOTH laptops** (kid `0d3fc12f…` + dev `232a64da…`): both are live-stalled (SSE event delivery dead behind keep-alives; `sync/applied` frozen hours behind `sync/desired`). After install, the work-first reconcile loop applies the pending Chrome/Brave blocks within seconds and keeps healing any future stall; verify `sync/applied.revisionId == desired` + `meta.appVersion=1.0.0+63c2808`.
+5. Phone APK update: parent's phone needs `LAPTOP-PARENT-0.2.38-release.apk` for honest sync status + truthful chips.
+6. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10.
 
 ## 14. MORE PITFALLS (2026-09-10)
 
