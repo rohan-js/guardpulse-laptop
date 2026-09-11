@@ -248,6 +248,7 @@
   <span id="lastErr" class="err small hidden" title="Last error — click Diagnostics for details"></span>
   <button id="btnBack" class="ghost hidden" onclick="goBack()">&#8592; Devices</button>
   <button id="btnDiag" class="ghost hidden" onclick="copyDiag()" title="Copy troubleshooting info">Diagnostics</button>
+  <button id="btnWriteTest" class="ghost hidden" onclick="writeTest()" title="Writes the selected device's current policy back unchanged and waits for the laptop to confirm">Write test</button>
   <button id="btnHome" class="ghost" onclick="goHome()">Home</button>
   <button id="btnSignOut" class="ghost hidden" onclick="signOut()">Sign out</button>
 </header>
@@ -1214,17 +1215,27 @@ let busyAction = null;
 function setBusy(on, name){ busyAction = on ? (name || "action") : null; document.body.classList.toggle("busy", on); }
 function busyActionName(){ return busyAction || "unknown"; }
 function busyOn(){ return document.body.classList.contains("busy"); }
-function withBusy(fn){
-  const name = (fn.name || "action").replace(/^bound /, "");
+const ACTION_LOG = [];
+function logAction(name, startedAt, ok, detail){
+  ACTION_LOG.unshift({ name, at: new Date(startedAt).toLocaleTimeString(), ms: Date.now() - startedAt, ok, detail: detail || null });
+  if (ACTION_LOG.length > 12) ACTION_LOG.pop();
+}
+function withBusy(name, fn){
   return async (...args) => {
     if (busyOn()){
       reportError("busy-gate", new Error("Another action is still running: " + busyActionName() + " — your " + name + " was not sent. Wait a few seconds and try again."));
       return;
     }
+    const startedAt = Date.now();
     setBusy(true, name);
-    const watchdog = setTimeout(() => { reportError("stuck-action", new Error("'" + busyActionName() + "' ran past 20s — releasing it. If writes keep failing, check your connection.")); setBusy(false); }, 20000);
-    try { await fn(...args); }
-    catch (e){ reportError(name, e); }
+    const watchdog = setTimeout(() => { reportError("stuck-action", new Error("'" + name + "' ran past 20s — releasing it. If writes keep failing, check your connection or an extension.")); setBusy(false); }, 20000);
+    try {
+      await fn(...args);
+      logAction(name, startedAt, true);
+    } catch (e){
+      logAction(name, startedAt, false, e && e.message);
+      reportError(name, e);
+    }
     finally { clearTimeout(watchdog); setBusy(false); }
   };
 }
@@ -1395,6 +1406,7 @@ function copyDiag(){
     d.build = BUILD;
     d.userAgent = navigator.userAgent;
     d.lastError = lastErrorRecord || null;
+    d.actionLog = ACTION_LOG;
     d.busy = busyOn() ? busyActionName() : null;
     d.signedInAt = auth.expiresAt ? new Date(auth.expiresAt).toISOString() : null;
     d.pollFailures = pollFailures;
@@ -1421,6 +1433,26 @@ function stopAllDeviceStreams(){
   for (const id of Object.keys(STREAMS)) delete STREAMS[id];
 }
 let lastStateRefresh = 0, pollFailures = 0, dbReqSeq = 0;
+// One-click pipeline probe: rewrites the device's CURRENT control content
+// unchanged (new revision only — zero behavior change) and waits for the
+// laptop's acknowledgement. Reports the first stage that fails.
+const writeTest = withBusy("writeTest", async () => {
+  if (!SCOPE || !SCOPE.deviceId){ toast("Open a device first."); return; }
+  const deviceId = SCOPE.deviceId;
+  toast("Write test: reading current policy…");
+  const w = await writeControl(deviceId, {}, "migration", "writeTest");
+  if (!w.ok){ reportError("write-test", new Error("WRITE failed: " + (w.error || "unknown"))); return; }
+  toast("Write landed (" + w.revisionId.slice(0, 8) + "…) — waiting for the laptop to confirm…");
+  for (let i = 0; i < 8; i++){
+    await sleep(4000);
+    const applied = JSON.parse(await dbGet("devices/" + deviceId + "/sync/applied"));
+    if (applied && applied.revisionId === w.revisionId){
+      toast("WRITE TEST PASSED — write + apply + ack all working (" + ((i + 1) * 4) + "s)");
+      return;
+    }
+  }
+  reportError("write-test", new Error("Write landed but the laptop did NOT confirm within 32s — the laptop did not apply it (stalled agent or old version)."));
+});
 function fmtAge(ms){
   const s = Math.floor(ms / 1000);
   if (s < 8) return "just now";
@@ -1548,7 +1580,7 @@ function showDeviceList(){
   show("deviceList");
   renderDeviceList();
 }
-const createAccount = withBusy(async () => {
+const createAccount = withBusy("createAccount", async () => {
   $("loginErr").textContent = "";
   const email = $("email").value.trim();
   const password = $("password").value;
@@ -1564,7 +1596,7 @@ const createAccount = withBusy(async () => {
     $("loginErr").textContent = e.message || "Account creation failed.";
   }
 });
-const signIn = withBusy(async () => {
+const signIn = withBusy("signIn", async () => {
   $("loginErr").textContent = "";
   const email = $("email").value.trim();
   const password = $("password").value;
@@ -1580,7 +1612,7 @@ const signIn = withBusy(async () => {
     $("loginErr").textContent = e.message || "Sign-in failed.";
   }
 });
-const signOut = withBusy(async () => {
+const signOut = withBusy("signOut", async () => {
   const yes = await askConfirm("Sign out?", "You will need to sign in again to control your devices.", "Sign out");
   if (!yes) return;
   auth.signOut();
@@ -1596,12 +1628,13 @@ async function tryRestoreSession(){
     return true;
   } catch (e){ return false; }
 }
-const loadDevice = withBusy(async (id) => {
+const loadDevice = withBusy("loadDevice", async (id) => {
   SCOPE = { kind: "device", deviceId: id };
   pendingRevision = null;
   setHeader("Loading device…");
   $("btnBack").classList.remove("hidden");
   $("btnDiag").classList.remove("hidden");
+  $("btnWriteTest").classList.remove("hidden");
   show("loading"); $("loadMsg").textContent = "Loading device…";
   startDeviceStreams(id);
   try {
@@ -1633,7 +1666,7 @@ function appRuleFor(key, pkg, blocked, limit, sessionLimit){
 }
 function appRule(key, blocked, limit){ return appRuleFor(key, pkgOf(key), blocked, limit); }
 
-const savePatch = withBusy(async (patch, kind, target, extraPaths) => {
+const savePatch = withBusy("savePatch", async (patch, kind, target, extraPaths) => {
   const w = await writeControl(SCOPE.deviceId, patch, kind, target, extraPaths);
   if (w.ok){ noteWritten(w.revisionId); toast("Sent to laptop — waiting for confirmation…"); }
   else { reportError("control write", new Error(w.error || "write failed")); }
@@ -1644,45 +1677,45 @@ function curBlocked(key){ const a = curApp(key); return a ? !!a.blocked : false;
 function curLimit(key){ const a = curApp(key); return a && a.dailyLimitMinutes ? a.dailyLimitMinutes : ""; }
 function curSessionLimit(key){ const a = curApp(key); return a && a.sessionLimitMinutes ? a.sessionLimitMinutes : ""; }
 function pkgOf(key){ const a = curApp(key); return a && a.packageName ? a.packageName : key; }
-const toggleBlock = withBusy(async (key) => { await savePatch({ apps: { [key]: appRule(key, !curBlocked(key)) } }, "appPolicy", pkgOf(key)); });
-const saveLimit = withBusy(async (key) => {
+const toggleBlock = withBusy("toggleBlock", async (key) => { await savePatch({ apps: { [key]: appRule(key, !curBlocked(key)) } }, "appPolicy", pkgOf(key)); });
+const saveLimit = withBusy("saveLimit", async (key) => {
   const el = $("lim_" + key); if (!el) return;
   const v = el.value.trim();
   if (v !== "" && Number.isNaN(parseInt(v, 10))){ toast("Enter a number of minutes (1-1440)."); return; }
   const lim = v === "" ? null : Math.max(1, Math.min(1440, parseInt(v, 10)));
   await savePatch({ apps: { [key]: appRule(key, curBlocked(key), lim) } }, "appPolicy", pkgOf(key));
 });
-const saveSessionLimit = withBusy(async (key) => {
+const saveSessionLimit = withBusy("saveSessionLimit", async (key) => {
   const el = $("slim_" + key); if (!el) return;
   const v = el.value.trim();
   if (v !== "" && Number.isNaN(parseInt(v, 10))){ toast("Enter a number of minutes (1-1440)."); return; }
   const lim = v === "" ? null : Math.max(1, Math.min(1440, parseInt(v, 10)));
   await savePatch({ apps: { [key]: appRule(key, curBlocked(key), undefined, lim) } }, "appPolicy", pkgOf(key));
 });
-const addAppByName = withBusy(async () => {
+const addAppByName = withBusy("addAppByName", async () => {
   const name = $("addName").value.trim();
   if (!name) return;
   const key = b64urlEncode(name);
   await savePatch({ apps: { [key]: appRuleFor(key, name, false) } }, "appPolicy", name);
 });
-const activateMode = withBusy(async (id) => {
+const activateMode = withBusy("activateMode", async (id) => {
   const m = (STATE.modes || []).find(x => x.modeId === id);
   const yes = await askConfirm("Activate mode?", (m ? '"' + m.name + '"' : "This mode") + " will override the app rules: apps listed in the mode follow the mode rules, unlisted apps are allowed.", "Activate");
   if (!yes) return;
   await savePatch({ activeMode: { modeId: id, modeName: m ? m.name : null } }, "activeMode", "activeMode");
 });
-const deactivateMode = withBusy(async () => {
+const deactivateMode = withBusy("deactivateMode", async () => {
   const yes = await askConfirm("Deactivate mode?", "The device goes back to its normal (top-level) app rules.", "Deactivate");
   if (!yes) return;
   await savePatch({ activeMode: null }, "activeMode", "activeMode");
 });
-const renameMode = withBusy(async (id) => {
+const renameMode = withBusy("renameMode", async (id) => {
   const m = (STATE.modes || []).find(x => x.modeId === id);
   const name = await askText("Rename mode", "Mode name", m ? m.name : "", v => { if (!v.trim()){ $("mErr").textContent = "Name required."; return false; } return true; });
   if (!name) return;
   await savePatch({ modes: { [id]: { modeId: id, name: name.trim() } } }, "modeUpdate", id);
 });
-const deleteMode = withBusy(async (id) => {
+const deleteMode = withBusy("deleteMode", async (id) => {
   const m = (STATE.modes || []).find(x => x.modeId === id);
   const isActive = m && STATE.activeModeId === id;
   const yes = await askConfirm("Delete mode" + (m ? ' "' + m.name + '"' : "") + "?", "This removes the mode and all of its app rules." + (isActive ? " It is currently ACTIVE — the device returns to the top-level rules." : ""), "Delete", true);
@@ -1690,19 +1723,19 @@ const deleteMode = withBusy(async (id) => {
   if (isActive) await savePatch({ modes: { [id]: null }, activeMode: null }, "modeDelete", id);
   else await savePatch({ modes: { [id]: null } }, "modeDelete", id);
 });
-const createMode = withBusy(async () => {
+const createMode = withBusy("createMode", async () => {
   const name = await askText("New mode", "Mode name", "", v => { if (!v.trim()){ $("mErr").textContent = "Name required."; return false; } return true; });
   if (!name) return;
   const id = "m_" + Date.now().toString(36);
   await savePatch({ modes: { [id]: { modeId: id, name: name.trim(), apps: {} } } }, "modeCreate", id);
 });
-const setSafe = withBusy(async (on) => {
+const setSafe = withBusy("setSafe", async (on) => {
   if (on){ pauseSafe(); return; }
   // Explicitly clear startedAt/startedBy too - a stale startedAt from an earlier
   // pause would otherwise linger in the node.
   await savePatch({ safeMode: { enabled: false, until: 0, startedAt: null, startedBy: null } }, "safeMode", "safeMode");
 });
-const pauseSafe = withBusy(async () => {
+const pauseSafe = withBusy("pauseSafe", async () => {
   const custom = $("safeCustom") ? parseInt($("safeCustom").value, 10) : 0;
   const dur = (!Number.isNaN(custom) && custom > 0) ? Math.min(1440, custom) * 60000 : (parseInt($("safeDur").value, 10) || 3600000);
   const yes = await askConfirm("Pause the device?", "All app locks will be paused for " + fmtMs(dur) + ".", "Pause");
@@ -1714,32 +1747,32 @@ const pauseSafe = withBusy(async () => {
     startedAt: { ".sv": "timestamp" }, startedBy: auth.uid,
   } }, "safeMode", "safeMode");
 });
-const saveBudget = withBusy(async () => {
+const saveBudget = withBusy("saveBudget", async () => {
   const v = $("budget").value.trim();
   if (v !== "" && Number.isNaN(parseInt(v, 10))){ toast("Enter a number of minutes (1-1440)."); return; }
   const lim = v === "" ? null : Math.max(1, Math.min(1440, parseInt(v, 10)));
   await savePatch({ budget: lim == null ? null : { dailyLimitMinutes: lim } }, "budget", "budget");
 });
-const toggleAllowlist = withBusy(async () => {
+const toggleAllowlist = withBusy("toggleAllowlist", async () => {
   const on = !STATE.allowlistEnabled;
   const yes = await askConfirm((on ? "Enable" : "Disable") + " allowlist mode?", on ? "Every app without an explicit rule will be BLOCKED until you allow it." : "Apps without rules return to their normal (unblocked) state.", on ? "Enable" : "Disable", on);
   if (!yes) return;
   await savePatch({ allowlist: { enabled: on } }, "allowlist", "allowlist");
 });
-const saveSchedule = withBusy(async () => {
+const saveSchedule = withBusy("saveSchedule", async () => {
   const enabled = $("schEnabled").checked;
   if (!enabled){ await savePatch({ schedule: null }); return; }
   const start = Math.max(0, Math.min(1439, parseInt($("schStart").value || "0", 10) || 0));
   const end = Math.max(0, Math.min(1439, parseInt($("schEnd").value || "0", 10) || 0));
   await savePatch({ schedule: { enabled: true, startMinute: start, endMinute: end } });
 });
-const disableSchedule = withBusy(async () => { await savePatch({ schedule: null }); });
-const toggleContentFilter = withBusy(async (cat) => {
+const disableSchedule = withBusy("disableSchedule", async () => { await savePatch({ schedule: null }); });
+const toggleContentFilter = withBusy("toggleContentFilter", async (cat) => {
   const cf = Object.assign({ social: false, gambling: false, adult: false, gaming: false }, STATE.contentFilter || {});
   cf[cat] = !cf[cat];
   await savePatch({ contentFilter: cf });
 });
-const savePin = withBusy(async () => {
+const savePin = withBusy("savePin", async () => {
   const pin = ($("devPin").value || "").trim();
   if (!/^\d{6}$/.test(pin)){ toast("PIN must be exactly 6 digits."); return; }
   const yes = await askConfirm(STATE.pinConfigured ? "Change PIN?" : "Set PIN?", "The new 6-digit PIN is used on this device for quick unlocks.", STATE.pinConfigured ? "Change" : "Set");
@@ -1786,7 +1819,7 @@ async function updateCustomSites(nextBlocked, nextRegistry){
     { customSites: registry.length ? registry : null }
   );
 }
-const addDomain = withBusy(async () => {
+const addDomain = withBusy("addDomain", async () => {
   const v = normalizeDomainUi($("newDomain").value);
   if (!v){ toast("Enter a valid domain, optionally with a path (e.g. youtube.com/shorts)."); return; }
   const blocked = (STATE.customDomains || []).slice();
@@ -1796,17 +1829,17 @@ const addDomain = withBusy(async () => {
   $("newDomain").value = "";
   await updateCustomSites(blocked.concat([v]), registry.concat([v]));
 });
-const removeDomain = withBusy(async (d) => {
+const removeDomain = withBusy("removeDomain", async (d) => {
   const yes = await askConfirm("Remove " + d + "?", "It will be forgotten and unblocked. You can add it back anytime.", "Remove", true);
   if (!yes) return;
   await updateCustomSites((STATE.customDomains || []).filter(x => x !== d), (STATE.customSites || []).filter(x => x !== d));
 });
-const clearDomains = withBusy(async () => {
+const clearDomains = withBusy("clearDomains", async () => {
   const yes = await askConfirm("Remove all custom sites?", "Every saved site will be forgotten and unblocked.", "Clear all", true);
   if (!yes) return;
   await updateCustomSites([], []);
 });
-const toggleDomain = withBusy(async (d, allow) => {
+const toggleDomain = withBusy("toggleDomain", async (d, allow) => {
   const blocked = (STATE.customDomains || []).slice();
   const next = allow ? blocked.filter(x => x !== d) : (blocked.includes(d) ? blocked : blocked.concat([d]));
   await updateCustomSites(next, STATE.customSites || []);
@@ -1820,15 +1853,15 @@ async function devicePost(action, body, label){
     reportError(label || action, e);
   }
 }
-const rescanApps = withBusy(async () => { await devicePost("command", { type: "rescanApps" }, "Rescan"); });
-const resetToday = withBusy(async (key) => {
+const rescanApps = withBusy("rescanApps", async () => { await devicePost("command", { type: "rescanApps" }, "Rescan"); });
+const resetToday = withBusy("resetToday", async (key) => {
   const label = (curApp(key) || {}).label || "this app";
   const yes = await askConfirm("Reset today?", "Clears today's usage for " + label + " so its daily limit restarts.", "Reset");
   if (!yes) return;
   await devicePost("command", { type: "resetToday", packageName: pkgOf(key) }, "Reset");
 });
-const respondUnlockUI = withBusy(async (requestId, action) => { await devicePost("unlock-respond", { requestId, action }, "Unlock"); });
-const openSetup = withBusy(async () => { await devicePost("command", { type: "openSetup" }, "Setup request"); });
+const respondUnlockUI = withBusy("respondUnlockUI", async (requestId, action) => { await devicePost("unlock-respond", { requestId, action }, "Unlock"); });
+const openSetup = withBusy("openSetup", async () => { await devicePost("command", { type: "openSetup" }, "Setup request"); });
 
 // Message to laptop (phone parity: devices/{id}/messages push, 1-500 chars) with a
 // local recent list (last 5, per device, in localStorage like the phone's memory).
@@ -1840,7 +1873,7 @@ function rememberMessage(deviceId, text){
   list.unshift(text);
   try { localStorage.setItem("gp.msg." + deviceId, JSON.stringify(list.slice(0, 5))); } catch (e){ /* ignore */ }
 }
-const sendMessage = withBusy(async () => {
+const sendMessage = withBusy("sendMessage", async () => {
   const el = $("msgInput"); if (!el) return;
   const text = el.value.trim();
   if (!text){ toast("Type a message first."); return; }
@@ -1855,7 +1888,7 @@ const sendMessage = withBusy(async () => {
   if (STATE){ STATE.recentMessages = recentMessages(SCOPE.deviceId); maybeRender(); }
 });
 
-const reconnect = withBusy(async () => {
+const reconnect = withBusy("reconnect", async () => {
   toast("Reconnecting…");
   auth.invalidate();
   await auth.ensure();           // force-refresh the token
@@ -1868,7 +1901,7 @@ const reconnect = withBusy(async () => {
 // also mirrors (policy/apps, policy/modes, policy/activeMode, security/safeMode,
 // security/pin), then stamp + write with kind "migration". Only shown when the
 // control snapshot is INVALID.
-const repairControl = withBusy(async () => {
+const repairControl = withBusy("repairControl", async () => {
   const yes = await askConfirm("Repair synchronized control?",
     "Rebuilds the control snapshot from the legacy per-feature nodes. Use this when the console reports the control snapshot as invalid.", "Repair", true);
   if (!yes) return;
@@ -1908,7 +1941,7 @@ const repairControl = withBusy(async () => {
   noteWritten(root.revisionId);
   await refreshState(true);
 });
-const removeDevice = withBusy(async (id) => {
+const removeDevice = withBusy("removeDevice", async (id) => {
   const dev = DEVICES.find(d => d.deviceId === id);
   const yes = await askConfirm("Remove " + (dev && dev.label ? dev.label : "device") + "?",
     "The laptop is told to unpair the next time it checks in. Until it confirms, the device stays listed as \"Waiting for laptop\".", "Remove", true);
@@ -1941,7 +1974,7 @@ function parsePairPayload(raw){
   if (!deviceId || !secret) return null;
   return { deviceId, secret };
 }
-const pairLaptop = withBusy(async () => {
+const pairLaptop = withBusy("pairLaptop", async () => {
   const payloadRaw = ($("pairPayload") || {}).value || "";
   let deviceId = ($("pairDeviceId") || {}).value || "";
   let secret = ($("pairSecret") || {}).value || "";
@@ -1980,7 +2013,7 @@ function toggleModeBlock(modeId, key){
   const row = m && (m.apps || []).find(x => x.key === key);
   setModeApp(modeId, key, row ? !row.blocked : true, undefined);
 }
-const saveModeLimit = withBusy(async (modeId, key) => {
+const saveModeLimit = withBusy("saveModeLimit", async (modeId, key) => {
   const el = $("mlim_" + key); if (!el) return;
   const m = (STATE.modes || []).find(x => x.modeId === modeId);
   const row = m && (m.apps || []).find(x => x.key === key);
@@ -1991,17 +2024,17 @@ const saveModeLimit = withBusy(async (modeId, key) => {
   if (Number.isNaN(n)){ toast("Enter a number of minutes (1-1440)."); return; }
   setModeApp(modeId, key, blocked, Math.max(1, Math.min(1440, n)));
 });
-const clearModeLimit = withBusy(async (modeId, key) => {
+const clearModeLimit = withBusy("clearModeLimit", async (modeId, key) => {
   const m = (STATE.modes || []).find(x => x.modeId === modeId);
   const row = m && (m.apps || []).find(x => x.key === key);
   setModeApp(modeId, key, row ? !!row.blocked : false, null);
 });
-const addModeApp = withBusy(async (modeId) => {
+const addModeApp = withBusy("addModeApp", async (modeId) => {
   const sel = $("madd_" + modeId);
   if (!sel || !sel.value) return;
   setModeApp(modeId, sel.value, false, undefined);
 });
-const removeModeApp = withBusy(async (modeId, key) => { savePatch({ modes: { [modeId]: { modeId, apps: { [key]: null } } } }, "modePolicy", modeId + ":" + pkgOf(key)); });
+const removeModeApp = withBusy("removeModeApp", async (modeId, key) => { savePatch({ modes: { [modeId]: { modeId, apps: { [key]: null } } } }, "modePolicy", modeId + ":" + pkgOf(key)); });
 function appFilter(){
   const q = ($("appSearch").value || "").toLowerCase();
   document.querySelectorAll("#appTable tbody tr").forEach(tr => {
