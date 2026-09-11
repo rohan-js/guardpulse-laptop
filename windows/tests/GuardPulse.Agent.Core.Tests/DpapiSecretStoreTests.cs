@@ -19,6 +19,28 @@ public class DpapiSecretStoreTests
     private string MirrorPath => Path.Combine(dir, "secrets.bin.mirror");
 
     [Fact]
+    public void OwnerMirror_RoundTrips_AndClears()
+    {
+        // The service persists the paired owner (owner.v2) so a restart knows the
+        // pairing before the first Firebase round-trip — a failed mirror must never
+        // be load-bearing, but the happy path must survive process restarts.
+        try
+        {
+            var store = Create();
+            store.Set("owner.v2", "uid-parent-1");
+            var again = Create();
+            Assert.Equal("uid-parent-1", again.Get("owner.v2"));
+
+            again.Delete("owner.v2");
+            Assert.Null(Create().Get("owner.v2"));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void SetGet_PersistsAcrossInstances()
     {
         try

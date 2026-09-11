@@ -4,10 +4,10 @@
 ; and Run-key fallback — all elevated, all silent.
 
 #ifndef AppVersion
-#define AppVersion "0.2.38"
+#define AppVersion "0.2.41"
 #endif
 #ifndef AppVersionCode
-#define AppVersionCode "38"
+#define AppVersionCode "41"
 #endif
 #define AppName "Device Service"
 #define ServiceName "GuardPulseDeviceService"

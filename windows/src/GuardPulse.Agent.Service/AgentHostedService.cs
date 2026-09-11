@@ -490,6 +490,15 @@ public sealed partial class AgentHostedService(
         _secrets = new DpapiSecretStore("secrets.bin", msg => _logger.LogWarning("Secret store: {Msg}", msg));
         _pairing = new PairingManager(_secrets);
         WriteDeviceJson();
+        // Restore the persisted owner BEFORE any agent can hello: IsPaired must be
+        // correct at boot, or the tray shows a fake "pairing needed" for the whole
+        // Firebase registration window (the post-reboot complaint). The live meta
+        // read in RegisterDeviceAsync still corrects a genuinely stale value.
+        _ownerUid = _secrets.Get(OwnerSecretKey);
+        if (!string.IsNullOrEmpty(_ownerUid))
+        {
+            _logger.LogInformation("Owner uid restored from secret store; paired state known before registration");
+        }
 
         _firebase = new RtdbFirebaseClient(_config, _secrets);
         _syncEngine = new SyncEngine(_firebase, _secrets, _deviceId, _time);
@@ -1942,7 +1951,7 @@ public sealed partial class AgentHostedService(
         // Rotate the pairing secret/code and refresh device.json for the next pairing.
         _pairing.Rotate();
         WriteDeviceJson();
-        _ownerUid = null;
+        SetOwnerUid(null);
         lock (_dedupeGate)
         {
             _handledUnlockRequests.Clear();
@@ -1957,6 +1966,35 @@ public sealed partial class AgentHostedService(
     /// <summary>Paired = an owner is recorded for this device.</summary>
     private bool IsPaired => !string.IsNullOrEmpty(_ownerUid);
 
+    private const string OwnerSecretKey = "owner.v2";
+
+    /// <summary>
+    /// Assigns the owner uid and mirrors it into the DPAPI store so a service
+    /// restart knows the pairing before the first Firebase round-trip. A null uid
+    /// clears the mirror (real unpair) so the tray correctly returns.
+    /// </summary>
+    private void SetOwnerUid(string? uid)
+    {
+        _ownerUid = uid;
+        try
+        {
+            if (string.IsNullOrEmpty(uid))
+            {
+                _secrets.Delete(OwnerSecretKey);
+            }
+            else
+            {
+                _secrets.Set(OwnerSecretKey, uid);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Worst case the next boot re-derives pairing from Firebase (the old
+            // slow-window behavior); never fail the pairing flow over the mirror.
+            _logger.LogWarning(ex, "Could not persist owner uid mirror");
+        }
+    }
+
     // ------------------------------------------------------------------ pairing
     private async Task RegisterDeviceAsync()
     {
@@ -1966,7 +2004,7 @@ public sealed partial class AgentHostedService(
         await registrar.RegisterAsync(_ct);
         if (!string.IsNullOrEmpty(registrar.OwnerUid))
         {
-            _ownerUid = registrar.OwnerUid;
+            SetOwnerUid(registrar.OwnerUid);
         }
 
         _logger.LogInformation("Device meta registered for {DeviceId}", _deviceId);
@@ -2012,7 +2050,7 @@ public sealed partial class AgentHostedService(
             var ownerUid = GetString(doc.RootElement, "ownerUid");
             if (!string.IsNullOrEmpty(ownerUid))
             {
-                _ownerUid = ownerUid;
+                SetOwnerUid(ownerUid);
                 _logger.LogInformation("Recovered paired owner from device metadata");
             }
         }
@@ -2175,7 +2213,7 @@ public sealed partial class AgentHostedService(
 
         if (!string.IsNullOrEmpty(existingOwner))
         {
-            _ownerUid = existingOwner;
+            SetOwnerUid(existingOwner);
             await RespondToPairRequestAsync(requestId, "rejected");
             return;
         }
@@ -2204,7 +2242,7 @@ public sealed partial class AgentHostedService(
 
         await RespondToPairRequestAsync(requestId, "accepted");
 
-        _ownerUid = parentUid;
+        SetOwnerUid(parentUid);
         _pairing.Rotate();
         WriteDeviceJson();
         _pipeHost.BroadcastPairedState(IsPaired); // tray hides once paired
