@@ -367,6 +367,15 @@ test("TV writes acknowledgements runtime diagnostics and precise usage only", as
       lastPolicyAppliedAt: 20,
       lastUsageWriteAt: 21,
       lastSuccessAt: 21,
+      pipelineLatencyMs: 187,
+    })
+  );
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/sync/runtime").set({
+      connected: true,
+      sessionId: "session-1",
+      protocolVersion: 2,
+      pipelineLatencyMs: "187",
     })
   );
   await assertSucceeds(

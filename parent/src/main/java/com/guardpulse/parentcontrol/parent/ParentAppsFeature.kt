@@ -181,7 +181,11 @@ internal fun AppsTab(
             return@LazyColumn
         }
         items(filtered) { app ->
-            val policy = policies[app.packageName] ?: defaultParentPolicy(app.packageName)
+            // Optimistic switch: the tapped position wins until the laptop acks
+            // (promoteConfirmedControl clears the overlay) or the TTL reverts it.
+            val policy = syncState.optimisticPolicies[app.packageName]
+                ?: policies[app.packageName]
+                ?: defaultParentPolicy(app.packageName)
             val liveState = states[app.packageName] ?: ParentState()
             val confirmedState = confirmedAppState(
                 hasConfirmedControl = syncState.confirmedControl != null,

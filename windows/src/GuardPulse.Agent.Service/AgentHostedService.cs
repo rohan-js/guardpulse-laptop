@@ -3,7 +3,7 @@
 // activity log, enforcement, unlocks, inventory, pairing) plus the pipe host, watchdog
 // and process suspender, and runs all periodic loops:
 //   - enforcement of the current foreground app (suspend + lock overlay broadcast),
-//     re-evaluated on every 15s boundary tick so time-based decisions apply promptly
+//     re-evaluated on every 5s boundary tick so time-based decisions apply promptly
 //   - activity upload (throttled to 20s) and history ack
 //   - heartbeat (30s) + sync/runtime + security/runtime
 //   - per-app state upload (60s + on decision change)
@@ -37,7 +37,7 @@ public sealed partial class AgentHostedService(
     // idle. These bound the laptop->phone direction (push-based on both ends once
     // the write lands, so the interval IS the latency).
     private static readonly TimeSpan ActivityFlushInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan StateUploadInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan StateUploadInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DeadManCheckInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DeadManGrace = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ActivityRetention = TimeSpan.FromDays(30);
@@ -707,11 +707,14 @@ public sealed partial class AgentHostedService(
 
             _ = Task.Run(async () =>
             {
-                // Ack after enforcement: the parent's Sync card reflects that the
-                // block is actually on the machine when it flips to APPLIED.
+                // Ack after enforcement — and ONE round-trip for everything the
+                // phone needs to see it: the ack, the per-app state diff and the
+                // latency telemetry ride a single multi-path PATCH. The parent's
+                // Sync card reflects that the block is actually on the machine
+                // when it flips to APPLIED.
                 try
                 {
-                    await _syncEngine.NotifyEnforcementAppliedAsync(snapshot.RevisionId);
+                    await _syncEngine.NotifyEnforcementAppliedAsync(snapshot.RevisionId, BuildApplyExtras(snapshot));
 
                     TryWriteText(Path.Combine(_stateDir, "enforcement-state.json"),
                         new JsonObject { ["revisionId"] = snapshot.RevisionId, ["appliedAtMs"] = NowMs() }.ToJsonString(JsonOpts));
@@ -721,15 +724,16 @@ public sealed partial class AgentHostedService(
                 catch (Exception ackEx)
                 {
                     _logger.LogWarning(ackEx, "Failed to acknowledge revision {RevisionId}", snapshot.RevisionId);
-                }
-
-                try
-                {
-                    await UploadStatesAsync(true);
-                }
-                catch (Exception upEx)
-                {
-                    _logger.LogWarning(upEx, "State upload after apply failed for {RevisionId}", snapshot.RevisionId);
+                    // The batched write failed: still push the state diff on its own
+                    // so the parent's chips update even without the ack.
+                    try
+                    {
+                        await UploadStatesAsync(true);
+                    }
+                    catch (Exception upEx)
+                    {
+                        _logger.LogWarning(upEx, "State upload after apply failed for {RevisionId}", snapshot.RevisionId);
+                    }
                 }
 
             });
@@ -2397,29 +2401,10 @@ public sealed partial class AgentHostedService(
         TimeZoneInfo.ConvertTime(_time.GetUtcNow(), _time.LocalTimeZone)
             .ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
-    private async Task UploadStatesAsync(bool force)
+    /// <summary>Apps whose runtime state the phone cares about: the foreground app,
+    /// everything with usage today, and the Windows bypass/protected set.</summary>
+    private HashSet<string> BuildTrackedApps()
     {
-        if (!force && DateTime.UtcNow - _lastStateUploadUtc < StateUploadInterval)
-        {
-            return;
-        }
-
-        _lastStateUploadUtc = DateTime.UtcNow;
-
-        // Day rollover: yesterday's per-app states keep their old usageMsToday in
-        // Firebase forever because the diff skips unchanged entries and most apps
-        // have no sessions today. Force one full re-upload per local day so usage
-        // resets propagate to the console/phone.
-        var dayKey = LocalDayKey();
-        if (!string.Equals(_lastUploadedDayKey, dayKey, StringComparison.Ordinal))
-        {
-            _lastUploadedDayKey = dayKey;
-            lock (_dedupeGate)
-            {
-                _lastUploadedAppStates.Clear();
-            }
-        }
-
         var tracked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         lock (_gate)
         {
@@ -2435,21 +2420,16 @@ public sealed partial class AgentHostedService(
         }
 
         tracked.UnionWith(PolicyConstants.WindowsBypassPackages);
+        return tracked;
+    }
 
-        var snapshot = _syncEngine.LastValidSnapshot;
-        var revisionId = snapshot?.RevisionId;
-
-        // Refresh the offline fail-closed cache FIRST and unconditionally:
-        // exactly when the cloud is unreachable (both PATCHes below throw) the
-        // session agent depends on this file being current — daily-limit and
-        // session-limit state evolve without any snapshot change.
-        WritePolicyCache(snapshot);
-
-        // Write per-app states in a single PATCH instead of one REST call per
-        // app (one SSE event instead of N on the phone). Only entries whose JSON
-        // changed since the last upload are included — an idle device's state is
-        // static, so the steady-state upload becomes a no-op. The data shape is
-        // identical; entries not in the patch keep their previously written values.
+    /// <summary>
+    /// Per-app state diff for the given snapshot: only entries whose JSON changed
+    /// since the last upload are included (an idle device's state is static, so the
+    /// steady-state upload is a no-op). Maintains the dedupe cache as a side effect.
+    /// </summary>
+    private JsonObject BuildStateDiff(HashSet<string> tracked, string? revisionId)
+    {
         var states = new JsonObject();
         foreach (var appKey in tracked)
         {
@@ -2486,6 +2466,71 @@ public sealed partial class AgentHostedService(
                 }
             }
         }
+
+        return changedStates;
+    }
+
+    /// <summary>
+    /// Extra paths for the batched post-apply write: the per-app state diff plus the
+    /// sync/runtime telemetry the phone's sync-health card renders (lastPolicy* were
+    /// previously never written; pipelineLatencyMs is the measured phone→laptop ms).
+    /// Paths are RELATIVE to devices/{id}.
+    /// </summary>
+    private JsonObject BuildApplyExtras(ControlSnapshotV2 snapshot)
+    {
+        var extras = new JsonObject();
+        var changedStates = BuildStateDiff(BuildTrackedApps(), snapshot.RevisionId);
+        if (changedStates.Count > 0)
+        {
+            extras["state/apps"] = changedStates;
+        }
+
+        var runtime = new JsonObject
+        {
+            ["lastPolicyReceivedAt"] = Sv(),
+            ["lastPolicyAppliedAt"] = Sv(),
+            ["lastStateWriteAt"] = Sv()
+        };
+        if (_syncEngine.PipelineLatencyMs is { } latencyMs)
+        {
+            runtime["pipelineLatencyMs"] = latencyMs;
+        }
+
+        extras["sync/runtime"] = runtime;
+        return extras;
+    }
+
+    private async Task UploadStatesAsync(bool force)
+    {
+        if (!force && DateTime.UtcNow - _lastStateUploadUtc < StateUploadInterval)
+        {
+            return;
+        }
+
+        _lastStateUploadUtc = DateTime.UtcNow;
+
+        // Day rollover: yesterday's per-app states keep their old usageMsToday in
+        // Firebase forever because the diff skips unchanged entries and most apps
+        // have no sessions today. Force one full re-upload per local day so usage
+        // resets propagate to the console/phone.
+        var dayKey = LocalDayKey();
+        if (!string.Equals(_lastUploadedDayKey, dayKey, StringComparison.Ordinal))
+        {
+            _lastUploadedDayKey = dayKey;
+            lock (_dedupeGate)
+            {
+                _lastUploadedAppStates.Clear();
+            }
+        }
+
+        var snapshot = _syncEngine.LastValidSnapshot;
+        var changedStates = BuildStateDiff(BuildTrackedApps(), snapshot?.RevisionId);
+
+        // Refresh the offline fail-closed cache FIRST and unconditionally:
+        // exactly when the cloud is unreachable (both PATCHes below throw) the
+        // session agent depends on this file being current — daily-limit and
+        // session-limit state evolve without any snapshot change.
+        WritePolicyCache(snapshot);
 
         if (changedStates.Count > 0)
         {

@@ -321,6 +321,18 @@ internal fun SyncHealthCard(
         state.syncRuntime.lastInventoryWriteAt?.let {
             RuntimeRow("Inventory updated", formatTimestamp(it), true)
         }
+        // End-to-end latency of the most recent parent change: the laptop measures
+        // requestedAt→applied server-side; fall back to the phone's own math when
+        // the runtime field has not landed yet.
+        val lastChangeMs = state.syncRuntime.pipelineLatencyMs
+            ?: desired?.requestedAt?.let { requestedAt ->
+                if (applied.revisionId == desired.revisionId) {
+                    applied.appliedAt?.let { appliedAt -> (appliedAt - requestedAt).takeIf { it >= 0 } }
+                } else null
+            }
+        lastChangeMs?.let {
+            RuntimeRow("Last change", "applied in $it ms", it <= 2_000)
+        }
         state.commands.firstOrNull()?.let { command ->
             RuntimeRow(
                 "Latest command",

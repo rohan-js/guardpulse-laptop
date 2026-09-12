@@ -9,6 +9,27 @@ import org.junit.Test
 
 class ParentReducersTest {
     @Test
+    fun optimisticPoliciesKeptWithinTtl() {
+        val optimistic = mapOf("app.exe" to ParentPolicy(manualBlocked = true))
+        val pruned = pruneOptimisticPolicies(optimistic, writtenAt = 1_000L, now = 5_000L)
+        assertEquals(optimistic, pruned)
+    }
+
+    @Test
+    fun optimisticPoliciesRevertAfterTtl() {
+        val optimistic = mapOf("app.exe" to ParentPolicy(manualBlocked = true))
+        val pruned = pruneOptimisticPolicies(optimistic, writtenAt = 1_000L, now = 1_000L + OPTIMISTIC_POLICY_TTL_MS)
+        assertEquals(emptyMap<String, ParentPolicy>(), pruned)
+    }
+
+    @Test
+    fun optimisticPoliciesRevertWithoutTimestamp() {
+        val optimistic = mapOf("app.exe" to ParentPolicy(manualBlocked = true))
+        val pruned = pruneOptimisticPolicies(optimistic, writtenAt = null, now = 1_000L)
+        assertEquals(emptyMap<String, ParentPolicy>(), pruned)
+    }
+
+    @Test
     fun pendingOfflineRevisionDoesNotBecomeApplied() {
         val status = deriveSyncStatus(
             phoneConnected = true,

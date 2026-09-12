@@ -1,6 +1,7 @@
 namespace GuardPulse.Agent.Core;
 
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,7 +32,7 @@ public interface IFirebaseClient : IDisposable
 
     /// <summary>
     /// SSE value stream. onData receives the raw JSON of the node (null after the
-    /// node was deleted). Reconnects with exponential backoff 5s..5min and
+    /// node was deleted). Reconnects with exponential backoff 1s..15s (or instantly on a network-change kick) and
     /// resubscribes until the disposable is disposed or the token cancels.
     /// onActivity (optional) fires once per received line — including keep-alives —
     /// and right after a successful connect, proving the stream is alive even when
@@ -87,6 +88,15 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
     private string? _refreshToken;
     private DateTime _idTokenExpiresUtc = DateTime.MinValue;
 
+    // Network-change kick: after sleep/wake or a Wi-Fi switch the old sockets are
+    // dead, and without a kick the stream loops sit out their full 1-15s backoff
+    // (and the phone-side control push is blind for that window). A network event
+    // short-circuits the delay so every stream reconnects immediately.
+    private readonly object _kickGate = new();
+    private TaskCompletionSource<bool>? _kick;
+    private long _lastKickTickMs;
+    private bool _networkHooked;
+
     /// <summary>
     /// Constructs a Firebase client. The default instance authenticates anonymously
     /// as the device (tvUid). Pass <paramref name="isOwner"/> true (with a distinct
@@ -101,6 +111,58 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
         _isOwner = isOwner;
         _refreshTokenSecretKey = refreshTokenSecretKey ?? RefreshTokenSecretKey;
         _refreshToken = secrets.Get(_refreshTokenSecretKey) ?? (isOwner ? null : config.RefreshToken);
+        HookNetworkChanges();
+    }
+
+    private void HookNetworkChanges()
+    {
+        if (_networkHooked) return;
+        _networkHooked = true;
+        try
+        {
+            NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
+            NetworkChange.NetworkAddressChanged += OnNetworkChanged;
+        }
+        catch
+        {
+            // best effort only; streams still recover on their normal backoff
+        }
+    }
+
+    private void OnNetworkChanged(object? sender, EventArgs e)
+    {
+        // Adapter events can storm (several per switch); throttle to one kick/sec.
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _lastKickTickMs);
+        if (now - last < 1_000) return;
+        Interlocked.Exchange(ref _lastKickTickMs, now);
+        TaskCompletionSource<bool>? pending;
+        lock (_kickGate)
+        {
+            pending = _kick;
+            _kick = null; // consume: loops wake exactly once per kick
+        }
+        pending?.TrySetResult(true);
+    }
+
+    /// <summary>Awaits the retry delay OR the next network-change kick, whichever
+    /// comes first. Returns true when kicked (caller resets the backoff).</summary>
+    private async Task<bool> WaitForRetryDelayOrKickAsync(TimeSpan delay, CancellationToken ct)
+    {
+        TaskCompletionSource<bool> kick;
+        lock (_kickGate)
+        {
+            _kick ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            kick = _kick;
+        }
+
+        var delayTask = Task.Delay(delay, ct);
+        var completed = await Task.WhenAny(delayTask, kick.Task).ConfigureAwait(false);
+        if (completed != delayTask)
+        {
+            try { await delayTask.ConfigureAwait(false); } catch (OperationCanceledException) { /* ct died during kick */ }
+        }
+        return completed != delayTask;
     }
 
     /// <summary>True once an owner instance has successfully signed in.</summary>
@@ -249,6 +311,15 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
 
     public void Dispose()
     {
+        if (_networkHooked)
+        {
+            try
+            {
+                NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
+                NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
+            }
+            catch { /* best effort */ }
+        }
         // The HttpClient is intentionally static/shared; individual streams are
         // disposed by their own handles/tokens. The auth gate is left untouched —
         // in-flight sign-ins may still be observing it.
@@ -579,13 +650,20 @@ public sealed class RtdbFirebaseClient : IFirebaseClient
                 onError(ex);
             }
 
+            bool kicked;
             try
             {
-                await Task.Delay(retryDelayMs, ct).ConfigureAwait(false);
+                kicked = await WaitForRetryDelayOrKickAsync(TimeSpan.FromMilliseconds(retryDelayMs), ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 break;
+            }
+
+            if (kicked)
+            {
+                retryDelayMs = InitialRetryMs; // network is back: reconnect right now
+                continue;
             }
 
             retryDelayMs = Math.Min(retryDelayMs * 2, MaxRetryMs);

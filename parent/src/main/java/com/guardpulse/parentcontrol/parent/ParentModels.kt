@@ -239,6 +239,10 @@ data class ParentSyncUiState(
     val browser: BrowserState? = null,
     // Phone-owned registry of every custom site ever added on this device (blocked or not).
     val customSites: List<String> = emptyList(),
+    // Switches the parent just tapped render instantly from here; cleared when the
+    // laptop acks (promoteConfirmedControl) or after OPTIMISTIC_POLICY_TTL_MS.
+    val optimisticPolicies: Map<String, ParentPolicy> = emptyMap(),
+    val optimisticPoliciesAt: Long? = null,
     val message: String? = null
 )
 

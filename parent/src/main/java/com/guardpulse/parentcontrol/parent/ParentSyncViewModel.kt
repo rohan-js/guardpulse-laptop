@@ -155,6 +155,14 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         current.selectedDeviceId ?: return setMessage("Select a TV first")
         val app = current.apps[packageName]
         policyValidationMessage(app, policy)?.let { return setMessage(it) }
+        // Optimistic switch: the toggle responds on tap; it is confirmed (cleared)
+        // when the laptop acks, or reverts after the TTL if the write never lands.
+        setState {
+            it.copy(
+                optimisticPolicies = it.optimisticPolicies + (packageName to policy),
+                optimisticPoliciesAt = System.currentTimeMillis()
+            )
+        }
         submitControlOperation(ControlOperation.UpdatePolicy(packageName, policy))
     }
 
@@ -476,7 +484,12 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
 
             override fun onStates(value: Map<String, ParentState>) {
                 latestRuntimeStates = value
-                setState { it.copy(states = value) }
+                setState {
+                    it.copy(
+                        states = value,
+                        optimisticPolicies = pruneOptimisticPolicies(it.optimisticPolicies, it.optimisticPoliciesAt, serverClock.now())
+                    )
+                }
                 promoteConfirmedRuntimeStates()
             }
             override fun onSecurity(value: SecurityRuntime) = setState { it.copy(security = value) }
@@ -493,7 +506,16 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
             }
 
             override fun onAppliedRevision(value: com.guardpulse.parentcontrol.shared.SyncAppliedRevision) {
-                setState { it.copy(appliedRevision = value) }
+                setState {
+                    val cleared: Map<String, ParentPolicy>? =
+                        if (value.status == PolicyConstants.SYNC_STATUS_FAILED) emptyMap() else null
+                    it.copy(
+                        appliedRevision = value,
+                        optimisticPolicies = cleared
+                            ?: pruneOptimisticPolicies(it.optimisticPolicies, it.optimisticPoliciesAt, serverClock.now()),
+                        optimisticPoliciesAt = if (cleared != null) null else it.optimisticPoliciesAt
+                    )
+                }
                 promoteConfirmedControl()
             }
 
@@ -580,6 +602,8 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 confirmedStates = emptyMap(),
                 browser = null,
                 customSites = emptyList(),
+                optimisticPolicies = emptyMap(),
+                optimisticPoliciesAt = null,
                 modes = emptyList(),
                 activeMode = ActiveMode(),
                 safeMode = SafeModeState(),
@@ -727,6 +751,8 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 modes = desired.toParentModes(),
                 activeMode = desired.toParentActiveMode(),
                 safeMode = desired.toParentSafeMode(),
+                optimisticPolicies = emptyMap(),
+                optimisticPoliciesAt = null,
                 confirmedStates = matchingRuntimeStates(
                     desired.revisionId,
                     latestRuntimeStates

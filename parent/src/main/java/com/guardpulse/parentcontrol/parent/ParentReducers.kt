@@ -46,3 +46,17 @@ internal fun effectiveUsageMs(state: ParentState, serverNow: Long): Long {
         .coerceIn(0L, PolicyConstants.FOREGROUND_USAGE_EXTRAPOLATION_MAX_MS)
     return (state.usageMsToday + elapsed).coerceAtLeast(0L)
 }
+
+// How long a tapped-but-unconfirmed switch keeps its optimistic position before
+// the UI reverts to the confirmed truth (a failed/lost write self-corrects).
+internal const val OPTIMISTIC_POLICY_TTL_MS = 10_000L
+
+internal fun pruneOptimisticPolicies(
+    optimistic: Map<String, ParentPolicy>,
+    writtenAt: Long?,
+    now: Long
+): Map<String, ParentPolicy> {
+    if (optimistic.isEmpty()) return optimistic
+    if (writtenAt == null || now - writtenAt >= OPTIMISTIC_POLICY_TTL_MS) return emptyMap()
+    return optimistic
+}

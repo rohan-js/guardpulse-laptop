@@ -247,7 +247,7 @@ public sealed class SyncEngine
     /// acks while revisionId is still the latest control revision and was not already acked this session.
     /// Throws on transport failure so the host can report NotifyEnforcementFailedAsync instead.
     /// </summary>
-    public async Task NotifyEnforcementAppliedAsync(string revisionId)
+    public async Task NotifyEnforcementAppliedAsync(string revisionId, JsonObject? extraPaths = null)
     {
         if (string.IsNullOrWhiteSpace(revisionId))
         {
@@ -280,7 +280,24 @@ public sealed class SyncEngine
             // Clear any error left by a previous failed ack of an older revision.
             ["error"] = null,
         };
-        var json = payload.ToJsonString();
+
+        // With extraPaths the ack rides ONE atomic multi-path root PATCH together
+        // with the caller's nodes (per-app state diff, sync/runtime telemetry) —
+        // enforcement confirmation and the phone's chips land in a single
+        // round-trip instead of two. Paths must be RELATIVE to devices/{id}.
+        var patchPath = FirebasePaths.DeviceSyncApplied(_deviceId);
+        var body = payload.ToJsonString();
+        if (extraPaths is { Count: > 0 })
+        {
+            var rootBody = new JsonObject { ["sync/applied"] = payload.DeepClone() };
+            foreach (var (key, value) in extraPaths)
+            {
+                rootBody[key] = value?.DeepClone();
+            }
+
+            patchPath = "devices/" + _deviceId;
+            body = rootBody.ToJsonString();
+        }
 
         // Retry the ack a bounded number of times: the dispatch dedup never re-applies
         // this revision, so a single transient PATCH failure would otherwise leave the
@@ -290,7 +307,7 @@ public sealed class SyncEngine
         {
             try
             {
-                await _firebase.PatchAsync(FirebasePaths.DeviceSyncApplied(_deviceId), json, CancellationToken.None).ConfigureAwait(false);
+                await _firebase.PatchAsync(patchPath, body, CancellationToken.None).ConfigureAwait(false);
                 lastError = null;
                 break;
             }

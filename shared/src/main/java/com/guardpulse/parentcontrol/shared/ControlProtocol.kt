@@ -165,7 +165,8 @@ data class SyncRuntimeState(
     val lastFailedChannel: String? = null,
     val lastError: String? = null,
     val lastErrorAt: Long? = null,
-    val inventoryRevision: String? = null
+    val inventoryRevision: String? = null,
+    val pipelineLatencyMs: Long? = null
 )
 
 enum class DeviceFreshness { LIVE, DELAYED, OFFLINE }

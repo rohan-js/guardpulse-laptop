@@ -1,5 +1,6 @@
 namespace GuardPulse.Agent.Core.Tests;
 
+using System.Text.Json.Nodes;
 using GuardPulse.Agent.Core;
 using GuardPulse.Protocol;
 using Xunit;
@@ -71,6 +72,42 @@ public sealed class SyncEngineReconcileTests
         Assert.Equal(AppliedPath, ack.Path);
         Assert.Contains("rev-200", ack.Json);
         Assert.Contains("\"applied\"", ack.Json);
+    }
+
+    [Fact]
+    public async Task NotifyAppliedWithExtras_RidesSingleRootPatch()
+    {
+        var (engine, firebase, _, secrets) = Harness();
+        engine.HandleControlData(ControlRev2);
+        engine.HandleDesiredData(DesiredRev2);
+
+        // Batched apply: ack + state diff + telemetry in ONE multi-path PATCH.
+        var extras = new JsonObject
+        {
+            ["state/apps"] = new JsonObject { ["c2FtcGxlLmV4ZQ"] = new JsonObject { ["lockBlocked"] = true } },
+            ["sync/runtime"] = new JsonObject { ["pipelineLatencyMs"] = 187, ["lastPolicyAppliedAt"] = 1710000000000 }
+        };
+        await engine.NotifyEnforcementAppliedAsync("rev-200", extras);
+
+        var patch = Assert.Single(firebase.Patches);
+        Assert.Equal("devices/test-device", patch.Path); // root PATCH, not the applied node
+        var body = JsonNode.Parse(patch.Json)!.AsObject();
+        Assert.Equal("rev-200", body["sync/applied"]!["revisionId"]!.GetValue<string>());
+        Assert.True(body["state/apps"]!["c2FtcGxlLmV4ZQ"]!["lockBlocked"]!.GetValue<bool>());
+        Assert.True(body["sync/runtime"]!["pipelineLatencyMs"]!.GetValue<long>() == 187);
+    }
+
+    [Fact]
+    public async Task NotifyAppliedWithoutExtras_KeepsAppliedNodePatch()
+    {
+        var (engine, firebase, _, _) = Harness();
+        engine.HandleControlData(ControlRev2);
+
+        await engine.NotifyEnforcementAppliedAsync("rev-200");
+
+        var patch = Assert.Single(firebase.Patches);
+        Assert.Equal(AppliedPath, patch.Path); // unchanged legacy shape
+        Assert.DoesNotContain("state/apps", patch.Json);
     }
 
     [Fact]

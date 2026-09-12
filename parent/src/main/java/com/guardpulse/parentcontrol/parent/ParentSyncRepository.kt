@@ -639,7 +639,8 @@ class ParentSyncRepository(private val database: DatabaseReference) {
         lastFailedChannel = child("lastFailedChannel").getValue(String::class.java),
         lastError = child("lastError").getValue(String::class.java),
         lastErrorAt = child("lastErrorAt").getValue(Long::class.java),
-        inventoryRevision = child("inventoryRevision").getValue(String::class.java)
+        inventoryRevision = child("inventoryRevision").getValue(String::class.java),
+        pipelineLatencyMs = child("pipelineLatencyMs").getValue(Long::class.java)
     )
 
     companion object {
