@@ -19,7 +19,7 @@
 #ifexist "firebase-local.iss"
 #include "firebase-local.iss"
 #else
-#define FirebaseApiKey "REPLACE_WITH_YOUR_FIREBASE_API_KEY"
+#define FirebaseApiKey "AIzaSyB8GZ4zLIWTjUX9I6vxHcozCn6FgZ0F6VA"
 #endif
 
 [Setup]

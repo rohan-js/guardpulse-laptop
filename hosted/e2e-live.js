@@ -46,6 +46,16 @@ const check = (name, cond) => { if (cond){ pass++; console.log("  ok  " + name);
     URL, URLSearchParams, TextEncoder, TextDecoder,
     btoa: s => Buffer.from(s, "binary").toString("base64"), atob: s => Buffer.from(s, "base64").toString("binary"),
   };
+  // The deployed console key is referrer-restricted to the hosting origin — the
+  // sandbox's real fetch must present the same Referer or sign-in gets 403.
+  const realFetch = fetch;
+  const probeFetch = (url, opts) => {
+    if (String(url).includes('identitytoolkit.googleapis.com') || String(url).includes('securetoken.googleapis.com')) {
+      opts = Object.assign({}, opts, { headers: Object.assign({ Referer: baseUrl + '/' }, (opts && opts.headers) || {}) });
+    }
+    return realFetch(url, opts);
+  };
+  sandbox.fetch = probeFetch;
   sandbox.window = sandbox; sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(js, sandbox, { filename: "deployed<script>" });

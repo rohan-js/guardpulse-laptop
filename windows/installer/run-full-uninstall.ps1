@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$log = "C:\Users\rohan\AppData\Local\Temp\guardpulse_full_uninstall.log"
+$log = "$env:TEMP\guardpulse_full_uninstall.log"
 "=== GuardPulse full uninstall $(Get-Date -Format o) ===" | Out-File $log -Encoding utf8
 function Log($m) { $m | Tee-Object -FilePath $log -Append | Write-Host }
 Log "User: $env:USERNAME  Elevated: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"

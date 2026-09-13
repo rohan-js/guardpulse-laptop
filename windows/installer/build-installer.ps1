@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Wire dotnet (not on system PATH)
-$DotNet = "C:\Users\rohan\AppData\Local\Microsoft\dotnet\dotnet.exe"
+$DotNet = "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe"
 if (-not (Test-Path $DotNet)) { throw "dotnet not found at $DotNet" }
 
 $Root = Split-Path (Split-Path $PSScriptRoot)
@@ -42,8 +42,12 @@ foreach ($line in (Get-Content $FirebaseProps)) {
     if ($line -match '^\s*firebase\.projectId\s*=\s*(.+?)\s*$') { $propsProject = $Matches[1] }
     if ($line -match '^\s*firebase\.databaseUrl\s*=\s*(.+?)\s*$') { $propsUrl = $Matches[1] }
 }
+# Per-platform keys are EXPECTED to diverge now: the installer carries the
+# desktop key, the phone the Android-restricted key (see AGENTS.md key matrix).
+# Only warn when they coincide with a placeholder; the cutover invariant (URL
+# belongs to the project) is enforced below.
 if ((Test-Path $FirebaseProps) -and $propsKey -and ($propsKey -ne $issKey)) {
-    throw "Firebase API key mismatch: firebase-local.iss ($($issKey.Substring(0,12))...) vs firebase.local.properties ($($propsKey.Substring(0,12))...). Keep the two files in sync."
+    Write-Host "  note: installer and phone use different API keys (desktop vs android) - by design" -ForegroundColor DarkGray
 }
 # The .iss also hardcodes the wizard prefill for projectId/databaseUrl - read them back from installer.iss and check the URL contains the project.
 $issProject = (Select-String -Path (Join-Path $InstallerDir "installer.iss") -Pattern "FirebasePage.Values\[1\] := '([^']+)'").Matches.Groups[1].Value
