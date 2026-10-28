@@ -70,6 +70,13 @@ internal sealed class AgentPipeHost : IDisposable
     public event Action<int, bool>? AdminStateReceived;
 
     /// <summary>
+    /// A connected agent pipe dropped (End Task, crash, logoff or spoof-reject). The
+    /// service kicks the watchdog on this so a killed agent is relaunched immediately
+    /// instead of waiting for the next periodic scan.
+    /// </summary>
+    public event Action? AgentDisconnected;
+
+    /// <summary>
     /// The setup window requested the pairing credentials ("deviceInfo" request).
     /// The handler receives the caller's req id and returns the complete reply JSON
     /// (embedding that req id), or null when the credentials are unavailable.
@@ -541,6 +548,7 @@ internal sealed class AgentPipeHost : IDisposable
 
         _logger.LogInformation("Session agent disconnected (endpoint {Id}, {Count} connected)",
             client.Id, ConnectedAgents);
+        AgentDisconnected?.Invoke();
         client.Dispose();
     }
 

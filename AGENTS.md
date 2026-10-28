@@ -178,11 +178,11 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ## 11. CURRENT STATE (2026-09-11 — supersedes §6)
 
-* Head **`0.2.42`** (latency round: network-change SSE kick, batched ack+state+telemetry write, 10s state cadence, optimistic phone switches, `pipelineLatencyMs` telemetry). Installer: `windows/installer/Output/DeviceServiceSetup-0.2.42.exe` (folds 0.2.37 uninstaller fix + 0.2.38 sync-heal + 0.2.41 persisted owner + this). Phone APK: `release-apk/LAPTOP-PARENT-0.2.42-release.apk`. Rules: `customSites` + `sync/runtime.pipelineLatencyMs` deployed live to SG. Web console: `https://guardpulse-laptop-sg.web.app` (§15).
+* Head **`0.2.43`** (tamper round: event-driven agent revival — pipe-disconnect kick + 2s watchdog scan, so End Task on the session agent is undone in ~1-2s instead of up to 10s+; `AgentRevivalPlanner` decision core unit-tested). Installer: `windows/installer/Output/DeviceServiceSetup-0.2.43.exe` (folds 0.2.37 uninstaller fix + 0.2.38 sync-heal + 0.2.41 persisted owner + 0.2.42 latency round + this). Phone APK: `release-apk/LAPTOP-PARENT-0.2.42-release.apk` (no phone changes in 0.2.43). Rules: `customSites` + `sync/runtime.pipelineLatencyMs` deployed live to SG. Web console: `https://guardpulse-laptop-sg.web.app` (§15).
 * **Both laptops are live-stalled** (confirmed in SG DB 09-11): heartbeats/state/messages flowing, `sync/applied` frozen hours behind `sync/desired` — SSE keep-alives mask a dead event-delivery. The 0.2.38 reconcile loop fixes it; **reinstall on both machines pending** (kid laptop `0d3fc12f…` runs 0.2.36; dev machine `232a64da…` runs 0.2.35 and its service is RUNNING again — user re-enabled it 09-11 for testing).
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
 * The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to **0.2.40** (honest sync status + truthful chips + custom-sites toggles: ON = allowed, OFF = blocked; x-removal asks first).
-* Tests green at ship: dotnet 278 (140 Protocol + 138 Core incl. InstallerScriptTests + SyncEngineReconcileTests), rules 47 (`npm --prefix firebase run test:rules`).
+* Tests green at ship: dotnet 287 (140 Protocol + 147 Core incl. AgentRevivalPlannerTests), rules 47 (`npm --prefix firebase run test:rules`).
 * **Hosted web console LIVE at `https://guardpulse-laptop-sg.web.app`** (runbook in §15) — full phone-parity rebuild; the old Cloudflare `guardpulse-console.pages.dev` deployment is STALE (pre-0.2.13 code + legacy US database) and can be deleted in the Cloudflare dashboard.
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)

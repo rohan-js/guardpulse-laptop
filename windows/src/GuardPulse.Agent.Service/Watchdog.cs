@@ -1,10 +1,12 @@
 // Watchdog: keeps one session agent alive per interactive session.
-// Every 10s it enumerates active WTS sessions, checks for a live agent in each and,
-// when missing, relaunches it into that session via WTSQueryUserToken + CreateProcessAsUser.
+// Every 2s - or immediately when the pipe host reports an agent disconnect (KickNow) -
+// it enumerates active WTS sessions, checks for a live agent in each and, when missing,
+// relaunches it into that session via WTSQueryUserToken + CreateProcessAsUser.
 // (This is the correct approach for launching UI from session 0; the installer's HKLM Run
 // key is only a logon-time fallback.) Detects agent kills and raises throttled tamper events.
 
 using System.Diagnostics;
+using GuardPulse.Agent.Core;
 using GuardPulse.Protocol;
 using Microsoft.Extensions.Logging;
 
@@ -12,14 +14,22 @@ namespace GuardPulse.Agent.Service;
 
 internal sealed class Watchdog : IDisposable
 {
+    // 2s: an End Task on the agent must cost the child at most ~2s of monitoring gap on
+    // the periodic path alone; the pipe-disconnect kick below cuts the typical case to <1s.
+    private static readonly TimeSpan ScanInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan KickDebounce = TimeSpan.FromMilliseconds(500);
+
     private readonly ILogger _logger;
     private readonly string _agentExePath;
     private readonly string _agentProcessName;
     private readonly object _gate = new();
+    private readonly object _kickGate = new();
     private readonly Dictionary<int, int> _agentPidBySession = new();
-    private readonly HashSet<int> _sessionsWithAgentSeen = new();
     private long _lastTamperMs;
     private long _lastLaunchFailLogMs;
+    private DateTime _lastKickAtUtc = DateTime.MinValue;
+    private TaskCompletionSource<bool> _kick = NewKickSource();
+    private bool _disposed;
     private CancellationTokenSource? _cts;
 
     public Watchdog(ILogger logger, string agentExePath)
@@ -39,28 +49,66 @@ internal sealed class Watchdog : IDisposable
         _logger.LogInformation("Watchdog started for {AgentExe}", Path.GetFileName(_agentExePath));
     }
 
+    /// <summary>
+    /// Requests an immediate revival scan instead of waiting for the next periodic tick.
+    /// Called when a pipe client drops - an End Task on the agent surfaces as an instant
+    /// transport drop - so the kill is undone in well under the scan interval. Debounced
+    /// to at most one extra scan per 500 ms.
+    /// </summary>
+    public void KickNow()
+    {
+        TaskCompletionSource<bool>? kick;
+        lock (_kickGate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (now - _lastKickAtUtc < KickDebounce)
+            {
+                return;
+            }
+
+            _lastKickAtUtc = now;
+            kick = _kick;
+            _kick = NewKickSource();
+        }
+
+        kick.TrySetResult(true);
+    }
+
+    private static TaskCompletionSource<bool> NewKickSource() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private async Task WatchLoopAsync(CancellationToken ct)
     {
-        // 10s: halves the wakeups; agent-kill detection latency stays acceptable and
-        // service-side enforcement is unaffected by the session gap.
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-        try
+        // Plain Task.Delay rather than PeriodicTimer: a kick must be able to supersede the
+        // pending wait, and PeriodicTimer forbids overlapping WaitForNextTickAsync calls.
+        while (!ct.IsCancellationRequested)
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            var scanDelay = Task.Delay(ScanInterval, CancellationToken.None);
+            Task kickTask;
+            lock (_kickGate)
             {
-                try
-                {
-                    Tick();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Watchdog tick failed");
-                }
+                kickTask = _kick.Task;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // stopping
+
+            await Task.WhenAny(scanDelay, kickTask);
+            if (ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            try
+            {
+                Tick();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Watchdog tick failed");
+            }
         }
     }
 
@@ -70,67 +118,59 @@ internal sealed class Watchdog : IDisposable
         var agents = Process.GetProcessesByName(_agentProcessName);
         try
         {
-            foreach (var sessionId in sessions)
+            var livePidBySession = new Dictionary<int, int>();
+            foreach (var agent in agents)
             {
-                var existing = agents.FirstOrDefault(p =>
+                try
                 {
-                    try
-                    {
-                        return p.SessionId == sessionId;
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                });
-
-                if (existing is not null)
-                {
-                    lock (_gate)
-                    {
-                        _agentPidBySession[sessionId] = existing.Id;
-                        _sessionsWithAgentSeen.Add(sessionId);
-                    }
-
-                    continue;
+                    livePidBySession.TryAdd(agent.SessionId, agent.Id);
                 }
-
-                // No agent in an active session: if we had seen one there before, it was killed -> tamper.
-                int? previousPid = null;
-                var seenBefore = false;
-                lock (_gate)
+                catch
                 {
-                    seenBefore = _sessionsWithAgentSeen.Contains(sessionId);
-                    previousPid = _agentPidBySession.GetValueOrDefault(sessionId);
+                    // process may exit between enumeration and read
                 }
+            }
 
-                if (seenBefore)
-                {
-                    OnTamper("agentKilled",
-                        $"Session agent for session {sessionId} (pid {previousPid ?? 0}) is no longer running; restarting.");
-                }
+            Dictionary<int, int> tracked;
+            lock (_gate)
+            {
+                tracked = new Dictionary<int, int>(_agentPidBySession);
+            }
 
+            var plan = AgentRevivalPlanner.Plan(sessions, livePidBySession, tracked);
+
+            foreach (var (sessionId, previousPid) in plan.KilledSessions)
+            {
+                OnTamper("agentKilled",
+                    $"Session agent for session {sessionId} (pid {previousPid}) is no longer running; restarting.");
+            }
+
+            foreach (var sessionId in plan.LaunchSessions)
+            {
                 var pid = LaunchInSession(sessionId, "");
                 if (pid != 0)
                 {
                     lock (_gate)
                     {
                         _agentPidBySession[sessionId] = pid;
-                        _sessionsWithAgentSeen.Add(sessionId);
                     }
                 }
             }
 
-            // Forget sessions that logged off - that is not tamper.
-            lock (_gate)
+            foreach (var (sessionId, pid) in plan.RefreshSessions)
             {
-                foreach (var sessionId in _agentPidBySession.Keys.ToList())
+                lock (_gate)
                 {
-                    if (!sessions.Contains(sessionId))
-                    {
-                        _agentPidBySession.Remove(sessionId);
-                        _sessionsWithAgentSeen.Remove(sessionId);
-                    }
+                    _agentPidBySession[sessionId] = pid;
+                }
+            }
+
+            // Forget sessions that logged off - that is not tamper.
+            foreach (var sessionId in plan.ForgetSessions)
+            {
+                lock (_gate)
+                {
+                    _agentPidBySession.Remove(sessionId);
                 }
             }
         }
@@ -273,6 +313,11 @@ internal sealed class Watchdog : IDisposable
 
     public void Dispose()
     {
+        lock (_kickGate)
+        {
+            _disposed = true;
+        }
+
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;

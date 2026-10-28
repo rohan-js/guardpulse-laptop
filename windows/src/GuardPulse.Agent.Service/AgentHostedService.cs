@@ -515,6 +515,9 @@ public sealed partial class AgentHostedService(
         // Only agents the watchdog knows about may talk on the pipe; a spoofed client
         // must not be able to keep ConnectedAgents > 0 and defeat the dead-man lockdown.
         _pipeHost.SetKnownAgentPids(() => _watchdog.KnownAgentPids());
+        // End Task on the session agent surfaces here as an instant pipe drop: kick the
+        // watchdog for an immediate revival scan instead of idling until its next tick.
+        _pipeHost.AgentDisconnected += () => _watchdog.KickNow();
         try
         {
             _agentAppKey = InventoryScanner.AppKeyForProcess(agentExePath);
