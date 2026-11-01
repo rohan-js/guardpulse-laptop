@@ -7,7 +7,7 @@
 ## 1. IDENTITY & SCOPE
 
 * **Product:** GuardPulse Laptop — Windows parental control (SYSTEM service + WPF session agent + Android parent app).
-* **Repo root:** `D:\UVM\PROJECTS\somthing1\somthgn1\guardpulse-laptop`
+* **Repo root:** `D:\UVM\PROJECTS\somthing1\guardpulse-laptop`
 * **Remote origin:** `https://github.com/rohan-js/guardpulse-laptop.git` (public, branch `main`)
 
 ### Hard rules
@@ -72,7 +72,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 
 ---
 
-## 6. CURRENT STATE (as of 2026-09-06 — 0.2.32)
+## 6. CURRENT STATE (2026-09-06, 0.2.32 — HISTORICAL; §11 supersedes everything here)
 
 * Head: **f146dfb** — Phone APK 0.2.31 (US instance). Prior **4b56257** (0.2.31) —
   site blocking made genuinely real-time (sync content-filter apply before ack,
@@ -116,23 +116,27 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
   - `AgentHostedService.cs`: "RAM-First, Disk-Later" fast-path executing in-memory `EvaluateCurrentForeground()` and process suspension before offloading disk cache, ICACLS, hosts, and RTDB acknowledgement to non-blocking background threads.
   - `RtdbFirebaseClient.cs`: Configured .NET 8 `SocketsHttpHandler` with 15s TCP keep-alive pings and `TCP_NODELAY` to prevent router/carrier sleep latency.
   - `ParentAppsFeature.kt`: Optimistic UI switch toggle without freeze or delay.
+- **0.2.37 → 0.2.43 (2026-09-10 → 2026-11-01, all shipped and pushed):**
+  - `f2e675f` **0.2.37**: hidden uninstaller `.msg` sidecar fix + `ssPostInstall` net-start retry.
+  - `63c2808` **0.2.38**: sync-heal — work-first reconcile loop defeats SSE keep-alive stalls (`sync/applied` no longer freezes); honest freshness on the phone; dead-path inventory rows dropped.
+  - `6fcb9c6` / `8e6c868` **0.2.39 / 0.2.40**: custom-sites registry (`devices/{id}/customSites`), per-site block toggle (OFF = blocked), confirm-gated removal; rules deployed live to SG.
+  - `d3ed816` → `458957b` (5 commits): **hosted web console** rebuilt to full phone parity at `https://guardpulse-laptop-sg.web.app`, then write-failure hardening (deferred-render fix, 12s auth timeouts, named busy actions, persistent error surface, one-click Write test).
+  - `0adafff` **0.2.41**: persisted paired owner (`owner.v2` in secrets.bin) — no fake pairing prompt after reboot.
+  - `a61d425` **0.2.42**: latency round — network-change SSE kick, batched ack+state+telemetry write, 10s state cadence, optimistic phone toggles, `pipelineLatencyMs`.
+  - `db7cb7b` **security**: PII scrub, de-usernamed paths, per-platform API keys (web referrer-restricted `…1SIk0` / desktop `…0F6VA` / Android SHA-1-pinned `…bZSM`).
+  - `36e9c3a` **0.2.43**: event-driven agent revival — pipe-disconnect kick + 2s watchdog scan (`AgentRevivalPlanner`); End Task on the session agent is undone in ~1s.
 
-## 7. IN-FLIGHT WORK
+## 7. IN-FLIGHT WORK (2026-11-01)
 
-**Inno Setup .exe installer** — user explicitly requested ("like any other installer"). Plan approved:
+Nothing large in flight — the installer shipped long ago (`2fb5f4c`) and every round since is folded into the latest artifacts. Standing items:
 
-* Tool: Inno Setup 6 **installed** at `C:\Program Files (x86)\Inno Setup 6\ISCC.exe` (6.3.3, verified 2026-08-24). `winget install -e --id JR.InnoSetup` was the install path.
-* Authored `windows/installer/installer.iss` + `windows/installer/build-installer.ps1` + `docs/assets/guardpulse-logo.ico` (currently **untracked** - `git status` shows those three). Fixes since draft: `AppId` GUID, `SetupIconFile`, `[UninstallRun]` flag, `FirebasePage` type, `Format()` calls, `[Files]` template bundle, ACL LockLedgerPattern loop, session copy -Recurse. See PROJECT_CONTEXT.md for full dump.\n* `installer.iss` replicates `install.ps1` exactly:
-  * `[Setup]` AppName=Device Service (stealth naming preserved), AppVersion=0.2.0, DefaultDirName={autopf}\Device Service, PrivilegesRequired=admin (+OverridesAllowed=dialog), OutputBaseFilename=GuardPulseLaptopSetup-0.2.0, SetupIconFile=<ico>.
-  * `[Files]` bundle merged `windows/installer/publish/*` (297 files) → `{app}`, recursesubdirs.
-  * `[Dirs]` `{commonappdata}\GuardPulse\Laptop\logs`.
-  * `[Registry]` SafeBoot Minimal+Network keys `(default)="Service"` flags uninsdeletekey; HKLM Run key `DeviceServiceAgent="{app}\GuardPulse.Agent.Session.exe"` flags uninsdeletevalue.
-  * `[Code]` wizard pages collecting ApiKey*/ProjectId*/DatabaseUrl; `CurStepChanged(ssInstall)` pre-copy stop/delete service + taskkill agents; post-copy GenerateAgentConfig (template token replace), icacls sequence (ONE FILE PER CALL — multi-file fails err87), sc create/description/failure/sdset, StartService. Abort on nonzero.
-  * `[UninstallRun]` sc stop/delete, delete Run key + SafeBoot keys; optional RemoveData prompt deletes `{commonappdata}\GuardPulse`.
-* `windows/installer/build-installer.ps1`: wires absolute dotnet (NOT on PATH), publishes both exes ReadyToRun into `windows/publish/{service,session}`, merges into `windows/installer/publish/` (+ `content-blocklists/`), generates ICO via System.Drawing BinaryWriter, then invokes `ISCC.exe` to produce `windows/installer/Output/GuardPulseLaptopSetup-0.2.0.exe`. Invoke as `powershell -ExecutionPolicy Bypass -File windows/installer/build-installer.ps1` from repo root.
-* Output: `windows/installer/Output/GuardPulseLaptopSetup-0.2.0.exe` (~150 MB expected).
-* Shipped: `2fb5f4c` compiled ISCC 6.3.3 (49s) -> `windows/installer/Output/GuardPulseLaptopSetup-0.2.0.exe` (50 MB, 298 payload files), `PrivilegesRequired=admin` forces UAC, wizard collects ApiKey*/ProjectId/DatabaseUrl, `GenerateAgentConfig` uses `AnsiString` bridge for `LoadStringFromFile`, `LockLedgerPattern` loops `usage-*/offsets-*/blocks-*.json`, `dotnet 190/190` + Kotlin green. Remaining: smoke UAC/wizard/ACLs/SafeBoot on a clean VM + uninstall round-trip (manual). `git push origin main` done.
-* Add LICENSE.md before public release.
+* **USER ACTION — reinstall `windows/installer/Output/DeviceServiceSetup-0.2.43.exe` on BOTH laptops** (kid `0d3fc12f…` runs 0.2.36, dev `232a64da…` runs 0.2.35). One install folds: 0.2.37 uninstaller `.msg` fix, 0.2.38 sync-heal (fixes the live SSE-stall freezes), 0.2.41 persisted owner, 0.2.42 latency round, 0.2.43 agent revival, desktop API key. After install verify `meta.appVersion=0.2.43`, `sync/applied == sync/desired`, and no tray/pairing prompt after reboot.
+* **USER ACTION — install `release-apk/LAPTOP-PARENT-0.2.42-release.apk` on the parent phone** (optimistic toggles, honest sync status, custom-sites toggles, Android-restricted key).
+* **DEFERRED (agent, only after both laptops run 0.2.43):** restrict/disable the legacy shared Browser key (`c684b4bc-…`, `AIzaSyAAWg…qGp0`) — the two installed agents still authenticate with it. `gcloud services api-keys update c684b4bc-… --allowed-referrers=…` or disable outright.
+* **USER ACTION:** rotate the parent password (shared in chat twice); delete the stale Cloudflare Pages project `guardpulse-console`.
+* **OPS (user):** switch the brother's Windows account to Standard — see §13 item 6.
+* Add LICENSE.md before any public announcement (still absent).
+* No git tag since `v0.2.0` — tag `v0.2.43`+ when shipping stabilizes.
 
 **Deferred destructive tests** (need explicit per-test consent): agent-kill lockdown depth while lock held, service-kill cache-only lock post-re-pair, simulated clock rollback → clockTampered, 1-min budget lock, hosts filter insert/remove round-trip, allowlist notApproved on dummy exe, virtual-desktop reassert visual, tray hide-on-pair visual. Use sacrificial dummy exe only; never ZCode/Brave.
 
@@ -141,7 +145,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 261+ passing (140 Protocol + 121+ Core)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 287 passing (140 Protocol + 147 Core; keep ≥ this)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)
@@ -176,13 +180,14 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ---
 
-## 11. CURRENT STATE (2026-09-11 — supersedes §6)
+## 11. CURRENT STATE (2026-11-01 — supersedes §6)
 
 * Head **`0.2.43`** (tamper round: event-driven agent revival — pipe-disconnect kick + 2s watchdog scan, so End Task on the session agent is undone in ~1-2s instead of up to 10s+; `AgentRevivalPlanner` decision core unit-tested). Installer: `windows/installer/Output/DeviceServiceSetup-0.2.43.exe` (folds 0.2.37 uninstaller fix + 0.2.38 sync-heal + 0.2.41 persisted owner + 0.2.42 latency round + this). Phone APK: `release-apk/LAPTOP-PARENT-0.2.42-release.apk` (no phone changes in 0.2.43). Rules: `customSites` + `sync/runtime.pipelineLatencyMs` deployed live to SG. Web console: `https://guardpulse-laptop-sg.web.app` (§15).
 * **Both laptops are live-stalled** (confirmed in SG DB 09-11): heartbeats/state/messages flowing, `sync/applied` frozen hours behind `sync/desired` — SSE keep-alives mask a dead event-delivery. The 0.2.38 reconcile loop fixes it; **reinstall on both machines pending** (kid laptop `0d3fc12f…` runs 0.2.36; dev machine `232a64da…` runs 0.2.35 and its service is RUNNING again — user re-enabled it 09-11 for testing).
+* **Tamper pattern (reported 2026-11-01):** the kid — still an admin — opens Task Manager in the policy-landing window and Ends the session agent to beat locks. 0.2.43's event-driven revival (pipe-drop kick + 2s scan) closes the software gap (~1s restore + `agentKilled` tamper + gone-dark alarm); the account demotion (§13 item 6) remains the real fix.
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
-* The two-tier phone dark-alarm ships in this repo's parent app; the parent's phone APK still needs a manual update to **0.2.40** (honest sync status + truthful chips + custom-sites toggles: ON = allowed, OFF = blocked; x-removal asks first).
-* Tests green at ship: dotnet 287 (140 Protocol + 147 Core incl. AgentRevivalPlannerTests), rules 47 (`npm --prefix firebase run test:rules`).
+* The parent's phone APK still needs a manual update to **0.2.42** (optimistic toggles, honest sync status + truthful chips, custom-sites toggles: ON = allowed / OFF = blocked, x-removal asks first, Android-restricted API key).
+* Tests green at ship: dotnet 287 (140 Protocol + 147 Core incl. AgentRevivalPlannerTests), rules 48 (`npm --prefix firebase run test:rules`).
 * **Hosted web console LIVE at `https://guardpulse-laptop-sg.web.app`** (runbook in §15) — full phone-parity rebuild; the old Cloudflare `guardpulse-console.pages.dev` deployment is STALE (pre-0.2.13 code + legacy US database) and can be deleted in the Cloudflare dashboard.
 
 ## 12. FIREBASE RUNBOOK — SG LIVE (2026-09-10)
@@ -193,7 +198,7 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 * **`database:patch` was removed in v15.** Admin writes: REST PATCH against `https://guardpulse-laptop-sg-default-rtdb.asia-southeast1.firebasedatabase.app/<path>.json?access_token=<token from firebase auth:print-access-token>`.
 * App keys in `control/v2/apps` and `state/apps` are **base64url(full exe path)** — decode before comparing with inventory.
 * Remote policy edit recipe (atomic, one PATCH at `/devices/{id}`): bump `control/v2/revisionId` (fresh push-style key) + `updatedAt` + `updatedBy`, set `control/v2/apps/<key>/manualBlocked`, and rewrite `sync/desired` with the same revisionId/kind/target/requestedAt/requestedBy. Agent applies in ~2 s and acks. Never edit without the parent's explicit ask.
-* Devices: `0d3fc12f…` kid laptop (live), `232a64da…` dev machine (paired, offline, service disabled), `f3834d1d…` old unpaired.
+* Devices: `0d3fc12f…` kid laptop (live, 0.2.36, stalled — needs 0.2.43), `232a64da…` dev machine (paired, 0.2.35, service re-enabled 09-11 for testing), `f3834d1d…` old unpaired.
 
 ## 13. 0.2.37/0.2.38 BACKLOG (ordered)
 
@@ -201,9 +206,9 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 2. ~~`ssPostInstall` `net start` retry~~ **DONE in `f2e675f`** (shipped in the 0.2.38 installer).
 3. ~~Phone UX: dead-path app rows~~ **DONE in `63c2808`** (stale .lnk targets no longer create rows) together with the real Chrome-row bug: apps whose desired rule the laptop never applied now read "Waiting for laptop", not "App allowed".
 3b. ~~Custom-sites per-site toggle + remove~~ **DONE in `6fcb9c6`** (0.2.39): card now renders one row per site (block Switch + x-remove, immediate commits, Clear-all confirm-gated). Enforcement shape frozen — new phone-owned `devices/{id}/customSites` registry node rides the same atomic controlUpdate; rules deployed live to SG; **needs only the new phone APK**, no laptop changes.
-4. **P0 — Reinstall 0.2.41 on BOTH laptops** (kid `0d3fc12f…` + dev `232a64da…`): 0.2.38's reconcile loop fixes the SSE-stall sync freezes AND 0.2.41's persisted owner kills the fake post-reboot pairing prompt + visible tray. After install, verify `sync/applied.revisionId == desired` and that a reboot no longer shows the tray/pairing window.
-5. Phone APK update: parent's phone needs `LAPTOP-PARENT-0.2.38-release.apk` for honest sync status + truthful chips.
-6. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10.
+4. **P0 — Reinstall 0.2.43 on BOTH laptops** (kid `0d3fc12f…` + dev `232a64da…`): one install fixes the SSE-stall sync freezes (0.2.38 reconcile), the fake post-reboot pairing prompt + visible tray (0.2.41 persisted owner), the 15–20 s lock latency (0.2.42), and the 10 s+ agent-revival gap (0.2.43). After install, verify `meta.appVersion=0.2.43`, `sync/applied.revisionId == desired`, and that a reboot shows no tray/pairing window.
+5. Phone APK update: parent's phone needs `LAPTOP-PARENT-0.2.42-release.apk` (optimistic toggles + honest sync + custom-sites toggles + Android-restricted key).
+6. Ops (user action): switch the brother's Windows account to Standard — `childAccountIsAdmin` still firing daily; he killed the agent twice on 09-09/09-10 and was reported 2026-11-01 beating locks via Task Manager End Task in the policy-landing window (0.2.43 revival covers the software side; the demotion is the real fix).
 
 ## 14. MORE PITFALLS (2026-09-10)
 
@@ -225,6 +230,6 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
   - **Web console key** `…1SIk0` — Identity-Toolkit+securetoken only, referrers `guardpulse-laptop-sg.web.app/*` — inline in hosted/index.html. Verified: sign-in 200 from the origin, 403 without/evil referrer.
   - **Desktop agent key** `…0F6VA` — Identity-Toolkit+securetoken only, no app restriction — installer prefill (firebase-local.iss + installer.iss fallback). Future installs carry it.
   - **Android key** `…bZSM` — restricted to `com.guardpulse.laptop.parent` + release SHA-1 `35415ac0…7f01` — firebase.local.properties (0.2.42 APK carries it).
-  - **Browser key (auto)** `…qGp0…` — UNRESTRICTED, still used ONLY by the two installed laptops' agent-config.json. **DEFERRED: after BOTH laptops run the 0.2.42 installer, restrict it to web.app referrers or disable it** (`gcloud services api-keys update c684b4bc-… --allowed-referrers=…`). Do NOT restrict before the reinstall — the old agents would lose sign-in.
+  - **Browser key (auto)** `…qGp0…` — UNRESTRICTED, still used ONLY by the two installed laptops' agent-config.json. **DEFERRED: after BOTH laptops run the 0.2.43 installer, restrict it to web.app referrers or disable it** (`gcloud services api-keys update c684b4bc-… --allowed-referrers=…`). Do NOT restrict before the reinstall — the old agents would lose sign-in.
   - build-installer.ps1's key-equality guard is now a warning (installer=desktop vs phone=android divergence is by design); the cutover invariant (URL contains project) is still enforced.
 * **Old dashboard history:** both dashboards were removed 0.2.13 (`43facc7`); the Cloudflare Pages project `guardpulse-console` kept serving the removed code pointed at the DEAD US database (sign-in breaks for SG accounts; any write would no-op silently). Audit verdicts: Safe-Mode-enable rejected by rules, app-limit clear silently ineffective, ack pipeline dead (no sync/desired), custom-sites registry absent. All fixed in this rebuild.
