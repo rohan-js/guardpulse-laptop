@@ -931,11 +931,18 @@ public sealed partial class AgentHostedService(
             BrowserPolicyManager.ApplyUrlBlocklist(customUrls);
 
             // Real-time layer: push per-tab rules to the session agent (UIA tab close).
-            // Parent-typed domains are exact (+www canonical); category lists keep the
-            // agent's suffix walk. Custom host-only entries ride `exactDomains` so an
-            // old agent that ignores the field simply loses custom tab closing (hosts
-            // still blocks the apex + www at DNS level) instead of over-blocking.
-            var (tabExactDomains, tabDomains, tabPaths) = BrowserPolicyManager.BuildTabRules(customUrls, categories.Values.SelectMany(d => d));
+            // Parent-typed domains are exact (+www canonical); curated category lists
+            // keep the agent's suffix walk. Custom host-only entries ride `exactDomains`
+            // so an old agent that ignores the field simply loses custom tab closing
+            // (hosts still blocks the apex + www at DNS level) instead of over-blocking.
+            // The hosts' "custom" bucket must NOT join the category set: its entries
+            // (apex + www variants) already ride `customUrls` as exact rules — feeding
+            // them back in as categories would re-introduce suffix coverage and block
+            // music.youtube.com again (the 0.2.44 regression).
+            var curatedCategories = categories
+                .Where(kv => !string.Equals(kv.Key, "custom", StringComparison.Ordinal))
+                .SelectMany(kv => kv.Value);
+            var (tabExactDomains, tabDomains, tabPaths) = BrowserPolicyManager.BuildTabRules(customUrls, curatedCategories);
             _pipeHost.BroadcastTabRules(tabExactDomains, tabDomains, tabPaths);
             TryWriteText(Path.Combine(_stateDir, "block-rules.json"),
                 System.Text.Json.JsonSerializer.Serialize(
