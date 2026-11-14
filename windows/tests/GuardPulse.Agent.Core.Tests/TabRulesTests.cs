@@ -60,20 +60,19 @@ public class TabRulesTests
     }
 
     [Fact]
-    public void ToBrowserPatterns_DomainOnly_IsExactPlusWww_NoSubdomainVariants()
+    public void ToBrowserPatterns_DomainOnly_IsDotPrefixedExact_NoBareHost()
     {
         var patterns = BrowserPolicyManager.ToBrowserPatterns("YouTube.COM");
-        // The subdomain opt-ins ([*.] and leading dot) must be gone: blocking
-        // youtube.com must not take down music.youtube.com at navigation start.
-        Assert.Equal(new[] { "youtube.com", "www.youtube.com" }, patterns);
-        Assert.DoesNotContain(patterns, p => p.StartsWith("[*.]"));
-        Assert.DoesNotContain(patterns, p => p.StartsWith("."));
+        // Chromium grammar (url_matcher/url_util.cc): BARE host = host + all subdomains
+        // (the music.youtube.com leak); LEADING DOT = match_subdomains=false → exact.
+        Assert.Equal(new[] { ".youtube.com", ".www.youtube.com" }, patterns);
+        Assert.All(patterns, p => Assert.StartsWith(".", p));
     }
 
     [Fact]
     public void ToBrowserPatterns_AlreadyWww_DoesNotDuplicate()
     {
-        Assert.Equal(new[] { "www.youtube.com" }, BrowserPolicyManager.ToBrowserPatterns("www.youtube.com"));
+        Assert.Equal(new[] { ".www.youtube.com" }, BrowserPolicyManager.ToBrowserPatterns("www.youtube.com"));
     }
 
     [Fact]

@@ -89,22 +89,22 @@ public static class BrowserPolicyManager
     }
 
     /// <summary>
-    /// Chromium URLBlocklist has no implicit wildcards: "youtube.com/shorts" matches only that exact path,
-    /// but the user intends the whole subtree, so we emit both the exact entry and "path/*".
-    /// Parent-typed bare domains are EXACT: the bare host plus its canonical www host — the
-    /// grammar's dot/[*.] prefixes exist to opt INTO subdomains, so we do not emit them;
-    /// blocking youtube.com must not take down music.youtube.com (parent complaint 2026-11-14).
+    /// Chromium URLBlocklist grammar (components/url_matcher/url_util.cc, verified in
+    /// source 2026-11-14): a BARE host sets match_subdomains=true (host + ALL subdomains),
+    /// while a LEADING DOT sets match_subdomains=false → HOST_EQUALS (exact host only).
+    /// So parent-typed domains emit dot-prefixed exact patterns for the apex and the
+    /// canonical www host — blocking youtube.com must not take down music.youtube.com.
+    /// Path entries (youtube.com/shorts) intentionally keep bare-host subtree matching.
     /// </summary>
     public static IReadOnlyList<string> ToBrowserPatterns(string raw)
     {
         var s = ToBrowserPattern(raw);
         if (string.IsNullOrWhiteSpace(s)) return Array.Empty<string>();
-        // Only path entries need the extra wildcard: youtube.com/shorts -> {youtube.com/shorts, youtube.com/shorts/*}
         if (!s.Contains('/'))
         {
             return s.StartsWith("www.", StringComparison.OrdinalIgnoreCase)
-                ? new[] { s }
-                : new[] { s, "www." + s };
+                ? new[] { "." + s }
+                : new[] { "." + s, ".www." + s };
         }
         return s.EndsWith("/*", StringComparison.Ordinal) ? new[] { s } : new[] { s, s + "/*" };
     }
