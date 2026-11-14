@@ -506,8 +506,8 @@ internal sealed class AgentPipeHost : IDisposable
 
     /// <summary>Pushes the per-tab blocked-site rules to the session agent (real-time
     /// tab enforcement — the agent closes matching tabs via UIA on the next scan).</summary>
-    public void BroadcastTabRules(IReadOnlyList<string> domains, IReadOnlyList<string> paths) =>
-        Broadcast(new { t = "tabRules", domains, paths });
+    public void BroadcastTabRules(IReadOnlyList<string> exactDomains, IReadOnlyList<string> domains, IReadOnlyList<string> paths) =>
+        Broadcast(new { t = "tabRules", domains, exactDomains, paths });
 
     public void BroadcastShowMessage(string text) =>
         Broadcast(new { t = "showMessage", text });

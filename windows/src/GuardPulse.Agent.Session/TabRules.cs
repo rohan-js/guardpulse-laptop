@@ -13,11 +13,22 @@ using System.Text.Json;
 /// </summary>
 public sealed class TabRules
 {
+    private IReadOnlyList<string> _exactDomains = new List<string>();
     private IReadOnlyList<string> _domains = new List<string>();
     private IReadOnlyList<string> _paths = new List<string>();
 
-    // Normalized to lowercase on set so Domains comparison is case-insensitive
-    // no matter which ingestion path built the set (Parse, pipe push, hello).
+    // Parent-typed custom sites: matched EXACTLY (www-canonical, no suffix walk) so a
+    // youtube.com rule covers www.youtube.com but never music.youtube.com.
+    // Normalized to lowercase on set so comparison is case-insensitive no matter
+    // which ingestion path built the set (Parse, pipe push, hello).
+    public IReadOnlyList<string> ExactDomains
+    {
+        get => _exactDomains;
+        init => _exactDomains = NormalizeAll(value);
+    }
+
+    // Curated category lists (social/gambling/adult/gaming): whole-domain rules —
+    // the suffix walk below covers their subdomains by design.
     public IReadOnlyList<string> Domains
     {
         get => _domains;
@@ -48,8 +59,17 @@ public sealed class TabRules
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
+            var exactDomains = new List<string>();
             var domains = new List<string>();
             var paths = new List<string>();
+            if (root.TryGetProperty("exactDomains", out var e) && e.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in e.EnumerateArray())
+                {
+                    if (item.GetString() is { Length: > 0 } host) exactDomains.Add(host.ToLowerInvariant());
+                }
+            }
+
             if (root.TryGetProperty("domains", out var d) && d.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in d.EnumerateArray())
@@ -68,7 +88,7 @@ public sealed class TabRules
                 }
             }
 
-            return new TabRules { Domains = domains, Paths = paths };
+            return new TabRules { ExactDomains = exactDomains, Domains = domains, Paths = paths };
         }
         catch (JsonException)
         {
@@ -76,11 +96,13 @@ public sealed class TabRules
         }
     }
 
-    public bool IsEmpty => Domains.Count == 0 && Paths.Count == 0;
+    public bool IsEmpty => ExactDomains.Count == 0 && Domains.Count == 0 && Paths.Count == 0;
 
-    /// <summary>Matches an omnibox URL against the rules. Whole-domain rules cover
-    /// subdomains (walking parent suffixes); path rules match host + segment-boundary
-    /// prefix. Scheme- and case-insensitive. Returns the matched rule or null.</summary>
+    /// <summary>Matches an omnibox URL against the rules. ExactDomains (parent-typed
+    /// sites) match the host exactly with www-canonicalization on both sides — no
+    /// subdomain leakage. Whole-domain rules (curated categories) cover subdomains
+    /// (walking parent suffixes); path rules match host + segment-boundary prefix.
+    /// Scheme- and case-insensitive. Returns the matched rule or null.</summary>
     public string? Match(string? url)
     {
         if (url is null || !IsHttpUrl(url)) return null;
@@ -105,7 +127,20 @@ public sealed class TabRules
             if (path.Length > 1) path = path.TrimEnd('/');
         }
 
-        // Walk host and its parent suffixes: a youtube.com rule covers m./music. too.
+        // Parent-typed rules first, EXACTLY: strip the canonical www. prefix from
+        // both sides, then compare. youtube.com blocks youtube.com + www.youtube.com;
+        // music.youtube.com is a different host and stays open.
+        var hostKey = StripWww(host);
+        foreach (var rule in ExactDomains)
+        {
+            if (hostKey.Equals(StripWww(rule), StringComparison.Ordinal))
+            {
+                return $"exact:{rule}";
+            }
+        }
+
+        // Walk host and its parent suffixes: a category rule like facebook.com covers
+        // www./m./touch. variants by design.
         var current = host;
         while (current is not null)
         {
@@ -152,6 +187,14 @@ public sealed class TabRules
         var dot = host.IndexOf('.');
         if (dot < 0 || dot == host.Length - 1) return null;
         return host[(dot + 1)..];
+    }
+
+    /// <summary>Strips one canonical "www." prefix — www.youtube.com and youtube.com
+    /// are the same site; music.youtube.com is not touched.</summary>
+    private static string StripWww(string host)
+    {
+        var s = host.Trim().ToLowerInvariant();
+        return s.StartsWith("www.", StringComparison.Ordinal) ? s[4..] : s;
     }
 
     private static bool IsHttpUrl(string url) =>

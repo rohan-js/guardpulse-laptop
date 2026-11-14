@@ -1,13 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\GuardPulse.Agent.Core\GuardPulse.Agent.Core.csproj" />
     <ProjectReference Include="..\..\src\GuardPulse.Agent.Service\GuardPulse.Agent.Service.csproj" />
+    <!-- Session is net8.0-windows (WPF): the test project targets windows too so the
+         real TabRules matcher (exact-vs-suffix site blocking) is unit tested. -->
+    <ProjectReference Include="..\..\src\GuardPulse.Agent.Session\GuardPulse.Agent.Session.csproj" />
   </ItemGroup>
 
   <ItemGroup>

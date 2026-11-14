@@ -91,7 +91,9 @@ public static class BrowserPolicyManager
     /// <summary>
     /// Chromium URLBlocklist has no implicit wildcards: "youtube.com/shorts" matches only that exact path,
     /// but the user intends the whole subtree, so we emit both the exact entry and "path/*".
-    /// Bare domains get "[*.]domain" too so subdomains (m./music.) are covered at navigation start.
+    /// Parent-typed bare domains are EXACT: the bare host plus its canonical www host — the
+    /// grammar's dot/[*.] prefixes exist to opt INTO subdomains, so we do not emit them;
+    /// blocking youtube.com must not take down music.youtube.com (parent complaint 2026-11-14).
     /// </summary>
     public static IReadOnlyList<string> ToBrowserPatterns(string raw)
     {
@@ -100,7 +102,9 @@ public static class BrowserPolicyManager
         // Only path entries need the extra wildcard: youtube.com/shorts -> {youtube.com/shorts, youtube.com/shorts/*}
         if (!s.Contains('/'))
         {
-            return new[] { s, "[*.]" + s, "." + s };
+            return s.StartsWith("www.", StringComparison.OrdinalIgnoreCase)
+                ? new[] { s }
+                : new[] { s, "www." + s };
         }
         return s.EndsWith("/*", StringComparison.Ordinal) ? new[] { s } : new[] { s, s + "/*" };
     }
@@ -116,17 +120,22 @@ public static class BrowserPolicyManager
         s = s.TrimStart('*', '.', '/').TrimEnd('/');
         if (string.IsNullOrWhiteSpace(s)) return "";
 
-        return s;
+        // Patterns land in HKLM policies; keep them canonical lowercase like every
+        // other site rule surface (hosts, tab rules, the phone's normalizer).
+        return s.ToLowerInvariant();
     }
 
     /// <summary>
     /// Builds the per-tab rule set for the session agent's real-time UIA tab-close
-    /// enforcement: whole-domain rules (subdomains implied by the agent's suffix walk)
-    /// + host/prefix path rules, from the same inputs the hosts file uses.
+    /// enforcement, in three groups: parent-typed domains are EXACT (host equality,
+    /// www-canonical — the agent must not suffix-walk them); curated category lists
+    /// stay whole-domain rules (subdomains covered by the agent's suffix walk);
+    /// parent-typed path entries keep their host/prefix prefix matching.
     /// </summary>
-    public static (IReadOnlyList<string> Domains, IReadOnlyList<string> Paths) BuildTabRules(
-        IEnumerable<string> customEntries, IEnumerable<string> categoryDomains)
+    public static (IReadOnlyList<string> ExactDomains, IReadOnlyList<string> Domains, IReadOnlyList<string> Paths)
+        BuildTabRules(IEnumerable<string> customEntries, IEnumerable<string> categoryDomains)
     {
+        var exactDomains = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         var domains = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         var paths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -144,8 +153,16 @@ public static class BrowserPolicyManager
             if (prefix.Length <= 1) prefix = "";
             if (host.Length == 0 || host.Length > 253 || host.Contains("..", StringComparison.Ordinal)) continue;
             if (!HostCharsValid(host)) continue;
-            domains.Add(host);
-            if (prefix.Length > 0) paths.Add(host + prefix);
+            if (prefix.Length > 0)
+            {
+                // Path entries keep prefix matching (their intent is a subtree, not a site);
+                // the agent's path rules still walk subdomains for these.
+                paths.Add(host + prefix);
+            }
+            else
+            {
+                exactDomains.Add(host);
+            }
         }
 
         foreach (var raw in categoryDomains ?? Enumerable.Empty<string>())
@@ -156,7 +173,7 @@ public static class BrowserPolicyManager
             domains.Add(host);
         }
 
-        return (domains.ToList(), paths.ToList());
+        return (exactDomains.ToList(), domains.ToList(), paths.ToList());
     }
 
     private static bool HostCharsValid(string host)

@@ -338,8 +338,17 @@ public partial class App : Application
                     break;
                 case "tabRules":
                 {
+                    var exactDomains = new List<string>();
                     var domains = new List<string>();
                     var paths = new List<string>();
+                    if (message.TryGetProperty("exactDomains", out var te) && te.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var item in te.EnumerateArray())
+                        {
+                            if (item.GetString() is { Length: > 0 } ex) exactDomains.Add(ex);
+                        }
+                    }
+
                     if (message.TryGetProperty("domains", out var td) && td.ValueKind == System.Text.Json.JsonValueKind.Array)
                     {
                         foreach (var item in td.EnumerateArray())
@@ -356,7 +365,7 @@ public partial class App : Application
                         }
                     }
 
-                    _browserWatcher?.SetTabRules(new TabRules { Domains = domains, Paths = paths });
+                    _browserWatcher?.SetTabRules(new TabRules { ExactDomains = exactDomains, Domains = domains, Paths = paths });
                     break;
                 }
                 case "showMessage":
@@ -379,10 +388,19 @@ public partial class App : Application
             var reply = await _pipe.SendRequestAsync("tabRulesGet", new { }, TimeSpan.FromSeconds(4));
             if (reply is not System.Text.Json.JsonElement wrapped
                 || !wrapped.TryGetProperty("payload", out var payload)) return;
+            var exactDomains = new List<string>();
             var domains = new List<string>();
             var paths = new List<string>();
             if (payload.ValueKind == System.Text.Json.JsonValueKind.Object)
             {
+                if (payload.TryGetProperty("exactDomains", out var te) && te.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var item in te.EnumerateArray())
+                    {
+                        if (item.GetString() is { Length: > 0 } ex) exactDomains.Add(ex);
+                    }
+                }
+
                 if (payload.TryGetProperty("domains", out var td) && td.ValueKind == System.Text.Json.JsonValueKind.Array)
                 {
                     foreach (var item in td.EnumerateArray())
@@ -400,7 +418,7 @@ public partial class App : Application
                 }
             }
 
-            Dispatcher.Invoke(() => _browserWatcher?.SetTabRules(new TabRules { Domains = domains, Paths = paths }));
+            Dispatcher.Invoke(() => _browserWatcher?.SetTabRules(new TabRules { ExactDomains = exactDomains, Domains = domains, Paths = paths }));
         }
         catch
         {

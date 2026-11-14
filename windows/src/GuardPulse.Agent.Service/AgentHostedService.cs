@@ -931,11 +931,15 @@ public sealed partial class AgentHostedService(
             BrowserPolicyManager.ApplyUrlBlocklist(customUrls);
 
             // Real-time layer: push per-tab rules to the session agent (UIA tab close).
-            var (tabDomains, tabPaths) = BrowserPolicyManager.BuildTabRules(customUrls, categories.Values.SelectMany(d => d));
-            _pipeHost.BroadcastTabRules(tabDomains, tabPaths);
+            // Parent-typed domains are exact (+www canonical); category lists keep the
+            // agent's suffix walk. Custom host-only entries ride `exactDomains` so an
+            // old agent that ignores the field simply loses custom tab closing (hosts
+            // still blocks the apex + www at DNS level) instead of over-blocking.
+            var (tabExactDomains, tabDomains, tabPaths) = BrowserPolicyManager.BuildTabRules(customUrls, categories.Values.SelectMany(d => d));
+            _pipeHost.BroadcastTabRules(tabExactDomains, tabDomains, tabPaths);
             TryWriteText(Path.Combine(_stateDir, "block-rules.json"),
                 System.Text.Json.JsonSerializer.Serialize(
-                    new { domains = tabDomains, paths = tabPaths }, JsonOpts));
+                    new { exactDomains = tabExactDomains, domains = tabDomains, paths = tabPaths }, JsonOpts));
         }
         catch (Exception ex)
         {

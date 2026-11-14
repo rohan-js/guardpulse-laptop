@@ -125,6 +125,7 @@ Enforcement precedence (EnforcementEngine.Decide): self-exempt → SafeMode → 
   - `a61d425` **0.2.42**: latency round — network-change SSE kick, batched ack+state+telemetry write, 10s state cadence, optimistic phone toggles, `pipelineLatencyMs`.
   - `db7cb7b` **security**: PII scrub, de-usernamed paths, per-platform API keys (web referrer-restricted `…1SIk0` / desktop `…0F6VA` / Android SHA-1-pinned `…bZSM`).
   - `36e9c3a` **0.2.43**: event-driven agent revival — pipe-disconnect kick + 2s watchdog scan (`AgentRevivalPlanner`); End Task on the session agent is undone in ~1s.
+  - **0.2.44** (2026-11-14): custom-site blocking is EXACT — blocking `youtube.com` no longer takes down `music.youtube.com`. Chromium/Firefox patterns drop the `[*.]`/dot subdomain opt-ins (bare host + canonical `www.` only); tab rules gain an `exactDomains` group (www-canonical equality, no suffix walk) while curated category lists keep whole-domain coverage; path rules (e.g. `youtube.com/shorts`) keep subtree matching by design. Hosts layer was already exact+www — unchanged.
 
 ## 7. IN-FLIGHT WORK (2026-11-01)
 
@@ -145,7 +146,7 @@ Nothing large in flight — the installer shipped long ago (`2fb5f4c`) and every
 ## 8. TESTING CHECKLIST BEFORE ANY COMMIT
 
 * [ ] `dotnet build windows/GuardPulse.Laptop.sln` — 0 errors
-* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 287 passing (140 Protocol + 147 Core; keep ≥ this)
+* [ ] `dotnet test windows/GuardPulse.Laptop.sln` — 302 passing (140 Protocol + 162 Core incl. TabRulesMatchTests; keep ≥ this)
 * [ ] `./gradlew.bat :parent:assembleDebug` — BUILD SUCCESSFUL
 * [ ] `./gradlew.bat :parent:test :shared:test` — green
 * [ ] `git diff --stat` ≈ `git diff -w --stat` (no CRLF explosion)
@@ -182,7 +183,7 @@ See `PROJECT_CONTEXT.md` §5 for full list. Top three that bite repeatedly:
 
 ## 11. CURRENT STATE (2026-11-01 — supersedes §6)
 
-* Head **`0.2.43`** (tamper round: event-driven agent revival — pipe-disconnect kick + 2s watchdog scan, so End Task on the session agent is undone in ~1-2s instead of up to 10s+; `AgentRevivalPlanner` decision core unit-tested). Installer: `windows/installer/Output/DeviceServiceSetup-0.2.43.exe` (folds 0.2.37 uninstaller fix + 0.2.38 sync-heal + 0.2.41 persisted owner + 0.2.42 latency round + this). Phone APK: `release-apk/LAPTOP-PARENT-0.2.42-release.apk` (no phone changes in 0.2.43). Rules: `customSites` + `sync/runtime.pipelineLatencyMs` deployed live to SG. Web console: `https://guardpulse-laptop-sg.web.app` (§15).
+* Head **`0.2.44`** (exact custom-site blocking — see §6b). Installer: `windows/installer/Output/DeviceServiceSetup-0.2.44.exe` (folds 0.2.37 uninstaller fix + 0.2.38 sync-heal + 0.2.41 persisted owner + 0.2.42 latency round + 0.2.43 agent revival + this). Phone APK: `release-apk/LAPTOP-PARENT-0.2.42-release.apk` (no phone changes since). Rules: `customSites` + `sync/runtime.pipelineLatencyMs` deployed live to SG. Web console: `https://guardpulse-laptop-sg.web.app` (§15).
 * **Both laptops were live-stalled** (confirmed in SG DB 09-11): heartbeats/state/messages flowing, `sync/applied` frozen hours behind `sync/desired` — SSE keep-alives mask a dead event-delivery. The 0.2.38 reconcile loop fixes it. Kid laptop `0d3fc12f…` now runs **0.2.43** (installed 06 Nov ~20:05 IST — its fresh boot applied the 71 h-old Roblox block, which is exactly the "applied in 255365066 ms" row the phone showed; full sync healthy). Dev machine `232a64da…` still on 0.2.35, reinstall pending.
 * **Tamper saga (2026-11-07 repair):** 242 `agentKilled` events since 07 Oct; the kid-laptop repair found the install-dir ACL broken — BUILTIN\Users read/execute denied, so every agent relaunch failed 0x80070005 silently. After the on-laptop agent restored Users RX, the agent reconnected (stable from 20:09 IST; protectionHealthy true; activity/browser writes live; next policy applied in 4.9 s). Brother had jayar's admin password until 01 Nov (password rotated since); `rithi_ygx8ljx` is Standard — the post-Nov-1 kills were Task Manager on his own session, now blocked by `DisableTaskMgr=1` in his hive (verify no system-wide HKLM DisableTaskMgr remains — it would lock the parent out too). Evasion kit in his Downloads: BlueStacks/BSTweaker, ProtonVPN, `delete_chrome_policies.bat` (impotent without admin) — block `HD-Player.exe` + `ProtonVPN.exe` via the Apps tab. `meta.appVersion` stays "1.0.0" (Windows builds don't stamp it — cosmetic).
 * LIVE Firebase = **Singapore** instance (runbook in §12). US instance is legacy.
